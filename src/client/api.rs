@@ -519,8 +519,10 @@ impl<T: Transport + 'static> Session<Authenticated, T> {
 
 /// Handle to a live subscription (RFC §13).
 ///
-/// Drop the handle to tear down the subscription server-side; alternatively
-/// call [`Self::unsubscribe`] for an explicit graceful shutdown.
+/// Dropping the handle removes the client-side forwarder and stops local
+/// delivery; it does **not** send an `unsubscribe` envelope. Call
+/// [`Self::unsubscribe`] to shut down gracefully with an explicit
+/// `unsubscribe` on the wire.
 pub struct SubscriptionHandle {
     /// The subscription's id.
     pub subscription_id: SubscriptionId,
