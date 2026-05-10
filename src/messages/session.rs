@@ -36,7 +36,7 @@ pub struct Credentials {
 /// Client identity attestation block (RFC §8.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientIdentity {
-    /// Implementation kind, e.g. `"claude-code"`.
+    /// Implementation kind, e.g. `"example-client"`.
     pub kind: String,
     /// Implementation version.
     pub version: String,
