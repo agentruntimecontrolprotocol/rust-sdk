@@ -12,11 +12,11 @@ Legend: ✅ implemented · 🟡 partial · ⏳ deferred to v0.2 · ➖ not appli
 | 3    | Terminology                        | ➖ |
 | 4    | Design Principles                  | ⏳ |
 | 5    | Architecture                       | ⏳ |
-| 6.1  | Envelope                           | ⏳ |
-| 6.2  | Message Types                      | ⏳ |
+| 6.1  | Envelope                           | ✅ |
+| 6.2  | Message Types                      | 🟡 (skeleton: ping/pong/event.emit/log/metric; rest in Phase 2) |
 | 6.3  | Command/Result/Event Flow          | ⏳ |
-| 6.4  | Delivery Semantics                 | ⏳ |
-| 6.5  | Priority & QoS                     | ⏳ |
+| 6.4  | Delivery Semantics                 | 🟡 (event log idempotency by `(session_id, id)`; logical idempotency table reserved) |
+| 6.5  | Priority & QoS                     | 🟡 (priority field round-trips; scheduling/shedding in later phases) |
 | 7    | Capability Negotiation             | ⏳ |
 | 8.1  | Session Establishment              | ⏳ |
 | 8.2  | Credentials (`bearer`,`signed_jwt`,`none`) | ⏳ |
@@ -59,12 +59,12 @@ Legend: ✅ implemented · 🟡 partial · ⏳ deferred to v0.2 · ➖ not appli
 | 17.1 | Tracing (`tracing` crate)          | ⏳ |
 | 17.2 | Structured Logs                    | ⏳ |
 | 17.3 | Metrics + standard names           | ⏳ |
-| 18.1 | Error Envelope                     | ⏳ |
-| 18.2 | Canonical Codes                    | ⏳ |
-| 18.3 | Retryability & Backoff             | ⏳ |
-| 19   | Resumability (after_message_id)    | ⏳ |
+| 18.1 | Error Envelope                     | 🟡 (`ARCPError` and `ErrorCode` taxonomy in place; envelope wrapper in Phase 2) |
+| 18.2 | Canonical Codes                    | ✅ |
+| 18.3 | Retryability & Backoff             | ✅ (`ErrorCode::retryable`) |
+| 19   | Resumability (after_message_id)    | 🟡 (event log `list(session, after_rowid, limit)` ready; runtime wiring in Phase 5) |
 | 19   | Resumability (checkpoint)          | ⏳ v0.2 |
 | 20   | MCP Compatibility                  | ➖ (advisory) |
-| 21   | Extensions                         | ⏳ |
+| 21   | Extensions                         | ✅ (namespace validation + classifier) |
 | 22   | Reference Transports (WS, stdio)   | ⏳ |
 | 22   | Reference Transports (HTTP/2,QUIC) | ⏳ v0.2 |

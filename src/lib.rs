@@ -20,9 +20,9 @@
 //!
 //! ## Status
 //!
-//! Phase 0 — repository skeleton and protocol plan. No protocol surfaces are
-//! implemented yet; later phases populate the modules described in
-//! [`PLAN.md`][plan].
+//! Phase 1 — envelope, errors, extensions, event log are landed. Later
+//! phases populate the runtime, client, transports, and CLI as described
+//! in [`PLAN.md`][plan].
 //!
 //! [rfc]: https://github.com/nficano/arpc/blob/main/agent-runtime-control-protocol/docs/RFC%200001%20%20v2%20%E2%80%94%20Agent%20Runtime%20Control%20Protocol.md
 //! [plan]: https://github.com/nficano/arpc/blob/main/rust-sdk/PLAN.md
@@ -30,6 +30,18 @@
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
 #![warn(unreachable_pub)]
+
+pub mod envelope;
+pub mod error;
+pub mod extensions;
+pub mod ids;
+pub mod messages;
+pub mod store;
+
+pub use envelope::{Envelope, Priority, RawEnvelope};
+pub use error::{ARCPError, ErrorCode};
+pub use extensions::{ExtensionRegistry, TypeClassification};
+pub use messages::MessageType;
 
 /// Protocol version implemented by this crate, as carried in the `arcp` field
 /// of every envelope (RFC §6.1).

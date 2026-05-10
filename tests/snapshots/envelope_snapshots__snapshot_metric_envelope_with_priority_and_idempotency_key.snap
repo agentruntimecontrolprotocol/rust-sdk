@@ -1,0 +1,22 @@
+---
+source: tests/envelope_snapshots.rs
+expression: value
+---
+{
+  "arcp": "1.0",
+  "id": "msg_01JABC0123456789ABCDEFGHJK",
+  "idempotency_key": "refund-ord_4812",
+  "payload": {
+    "dims": {
+      "kind": "input",
+      "model": "claude-3.5"
+    },
+    "name": "tokens.used",
+    "unit": "tokens",
+    "value": 1432.0
+  },
+  "priority": "high",
+  "session_id": "sess_01JABC0123456789ABCDEFGHJK",
+  "timestamp": "2026-05-07T21:30:00Z",
+  "type": "metric"
+}

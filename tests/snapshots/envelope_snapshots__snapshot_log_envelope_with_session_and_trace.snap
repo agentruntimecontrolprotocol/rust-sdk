@@ -1,0 +1,20 @@
+---
+source: tests/envelope_snapshots.rs
+expression: value
+---
+{
+  "arcp": "1.0",
+  "id": "msg_01JABC0123456789ABCDEFGHJK",
+  "payload": {
+    "attributes": {
+      "attempt": 2,
+      "tool": "filesystem.search"
+    },
+    "level": "warn",
+    "message": "Retrying tool invocation"
+  },
+  "session_id": "sess_01JABC0123456789ABCDEFGHJK",
+  "timestamp": "2026-05-07T21:30:00Z",
+  "trace_id": "trace_789",
+  "type": "log"
+}
