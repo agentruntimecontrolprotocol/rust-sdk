@@ -37,11 +37,11 @@ Legend: ✅ implemented · 🟡 partial · ⏳ deferred to v0.2 · ➖ not appli
 | 11.3 | Binary Encoding (base64 in-envelope) | ⏳ |
 | 11.3 | Binary Encoding (sidecar frames)   | ⏳ v0.2 |
 | 11.4 | Reasoning Streams                  | ⏳ |
-| 12.1 | Human Input Requests               | ⏳ |
-| 12.2 | Choice Requests                    | ⏳ |
-| 12.3 | Provenance / multi-channel (first-wins) | ⏳ |
+| 12.1 | Human Input Requests               | 🟡 (round-trip works via `ToolContext`; JSON Schema validation deferred) |
+| 12.2 | Choice Requests                    | ✅ |
+| 12.3 | Provenance / multi-channel (first-wins) | 🟡 (single-channel only; fan-out deferred) |
 | 12.3 | Provenance / multi-channel (quorum) | ⏳ v0.2 |
-| 12.4 | Expiration with default fallback   | ⏳ |
+| 12.4 | Expiration with default fallback   | ⏳ (payload typed; runtime expiry sweep deferred) |
 | 13.1 | Subscribe                          | ⏳ |
 | 13.2 | Filtering                          | ⏳ |
 | 13.3 | Backfill                           | ⏳ |

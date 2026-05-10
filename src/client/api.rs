@@ -7,13 +7,14 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use tokio::sync::{oneshot, Mutex};
 
+use crate::client::handlers::{HumanInputHandler, NoopHumanInputHandler};
 use crate::envelope::Envelope;
 use crate::error::{ARCPError, ErrorCode};
 use crate::ids::{JobId, MessageId, SessionId};
 use crate::messages::{
-    CancelPayload, CancelTargetKind, Capabilities, ClientIdentity, Credentials, JobAcceptedPayload,
-    JobCompletedPayload, JobFailedPayload, MessageType, SessionAcceptedPayload, SessionOpenPayload,
-    ToolInvokePayload,
+    CancelPayload, CancelTargetKind, Capabilities, ClientIdentity, Credentials,
+    HumanChoiceResponsePayload, HumanInputResponsePayload, JobAcceptedPayload, JobCompletedPayload,
+    JobFailedPayload, MessageType, SessionAcceptedPayload, SessionOpenPayload, ToolInvokePayload,
 };
 use crate::transport::Transport;
 
@@ -52,6 +53,7 @@ struct SessionInner<T: Transport + 'static> {
     /// invoke→accepted: `correlation_id` → oneshot for the `job_id`.
     pending_accepted: DashMap<MessageId, oneshot::Sender<JobId>>,
     reader: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    human_handler: Arc<dyn HumanInputHandler>,
     _transport_kind: PhantomData<T>,
 }
 
@@ -157,6 +159,52 @@ impl<T: Transport + 'static> Session<Unauthenticated, T> {
 
     async fn reader_loop(inner: Arc<SessionInner<T>>) {
         while let Ok(Some(env)) = inner.transport.recv().await {
+            // Human-input requests don't carry a correlation_id matching a
+            // pending job entry; forward them to the user-supplied handler.
+            match env.payload.clone() {
+                MessageType::HumanInputRequest(payload) => {
+                    let handler = Arc::clone(&inner.human_handler);
+                    let transport = Arc::clone(&inner.transport);
+                    let request_id = env.id.clone();
+                    let session_id = env.session_id.clone();
+                    tokio::spawn(async move {
+                        let value = handler.input(payload).await;
+                        let mut response = Envelope::new(MessageType::HumanInputResponse(
+                            HumanInputResponsePayload {
+                                value,
+                                responded_by: "client-handler".into(),
+                                responded_at: chrono::Utc::now(),
+                            },
+                        ));
+                        response.correlation_id = Some(request_id);
+                        response.session_id = session_id;
+                        let _ = transport.send(response).await;
+                    });
+                    continue;
+                }
+                MessageType::HumanChoiceRequest(payload) => {
+                    let handler = Arc::clone(&inner.human_handler);
+                    let transport = Arc::clone(&inner.transport);
+                    let request_id = env.id.clone();
+                    let session_id = env.session_id.clone();
+                    tokio::spawn(async move {
+                        let choice_id = handler.choice(payload).await;
+                        let mut response = Envelope::new(MessageType::HumanChoiceResponse(
+                            HumanChoiceResponsePayload {
+                                choice_id,
+                                responded_by: "client-handler".into(),
+                                responded_at: chrono::Utc::now(),
+                            },
+                        ));
+                        response.correlation_id = Some(request_id);
+                        response.session_id = session_id;
+                        let _ = transport.send(response).await;
+                    });
+                    continue;
+                }
+                _ => {}
+            }
+
             let Some(corr) = env.correlation_id.clone() else {
                 continue;
             };
@@ -343,23 +391,32 @@ impl JobHandle {
 /// Client-side entry point.
 pub struct ARCPClient<T: Transport + 'static> {
     transport: Option<T>,
+    human_handler: Arc<dyn HumanInputHandler>,
 }
 
 impl<T: Transport + 'static> std::fmt::Debug for ARCPClient<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ARCPClient")
             .field("attached", &self.transport.is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 impl<T: Transport + 'static> ARCPClient<T> {
     /// Construct over an attached transport.
     #[must_use]
-    pub const fn new(transport: T) -> Self {
+    pub fn new(transport: T) -> Self {
         Self {
             transport: Some(transport),
+            human_handler: Arc::new(NoopHumanInputHandler),
         }
+    }
+
+    /// Replace the default no-op handler with `handler`.
+    #[must_use]
+    pub fn with_human_input_handler(mut self, handler: Arc<dyn HumanInputHandler>) -> Self {
+        self.human_handler = handler;
+        self
     }
 
     /// Open an unauthenticated session.
@@ -385,6 +442,7 @@ impl<T: Transport + 'static> ARCPClient<T> {
                 pending_jobs: DashMap::new(),
                 pending_accepted: DashMap::new(),
                 reader: Mutex::new(None),
+                human_handler: Arc::clone(&self.human_handler),
                 _transport_kind: PhantomData,
             }),
             _state: PhantomData,

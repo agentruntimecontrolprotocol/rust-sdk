@@ -4,10 +4,12 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use dashmap::DashMap;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use super::context::{HumanResponse, ToolContext};
 use super::job::{JobEntry, JobRegistry};
 use super::session::{HandshakePhase, SessionState};
 use super::tools::ToolRegistry;
@@ -17,7 +19,8 @@ use crate::error::{ARCPError, ErrorCode};
 use crate::extensions::ExtensionRegistry;
 use crate::ids::{JobId, MessageId, SessionId};
 use crate::messages::{
-    CancelPayload, CancelTargetKind, Capabilities, JobAcceptedPayload, JobCancelledPayload,
+    CancelPayload, CancelTargetKind, Capabilities, HumanChoiceResponsePayload,
+    HumanInputCancelledPayload, HumanInputResponsePayload, JobAcceptedPayload, JobCancelledPayload,
     JobCompletedPayload, JobFailedPayload, JobStartedPayload, JobState, MessageType,
     RuntimeIdentity, SessionAcceptedPayload, SessionLease, SessionOpenPayload,
     SessionRejectedPayload, SessionUnauthenticatedPayload, ToolInvokePayload,
@@ -210,6 +213,8 @@ impl ARCPRuntime {
 
         let connection_token = CancellationToken::new();
         let jobs = JobRegistry::new();
+        let pending_human: Arc<DashMap<MessageId, oneshot::Sender<HumanResponse>>> =
+            Arc::new(DashMap::new());
         let mut state: Option<SessionState> = None;
         let mut seen_ids: HashSet<MessageId> = HashSet::new();
 
@@ -266,6 +271,7 @@ impl ARCPRuntime {
                         self.spawn_tool_invoke(
                             &out_tx,
                             &jobs,
+                            &pending_human,
                             &connection_token,
                             envelope.id.clone(),
                             s.session_id.clone(),
@@ -277,6 +283,29 @@ impl ARCPRuntime {
                 MessageType::Cancel(payload) => {
                     self.handle_cancel(&out_tx, &jobs, envelope.id.clone(), &payload)
                         .await;
+                }
+                MessageType::HumanInputResponse(HumanInputResponsePayload { value, .. }) => {
+                    if let Some(corr) = envelope.correlation_id.clone() {
+                        if let Some((_, tx)) = pending_human.remove(&corr) {
+                            let _ = tx.send(HumanResponse::Value(value));
+                        }
+                    }
+                }
+                MessageType::HumanChoiceResponse(HumanChoiceResponsePayload {
+                    choice_id, ..
+                }) => {
+                    if let Some(corr) = envelope.correlation_id.clone() {
+                        if let Some((_, tx)) = pending_human.remove(&corr) {
+                            let _ = tx.send(HumanResponse::Choice(choice_id));
+                        }
+                    }
+                }
+                MessageType::HumanInputCancelled(HumanInputCancelledPayload { code, .. }) => {
+                    if let Some(corr) = envelope.correlation_id.clone() {
+                        if let Some((_, tx)) = pending_human.remove(&corr) {
+                            let _ = tx.send(HumanResponse::Cancelled(code));
+                        }
+                    }
                 }
                 MessageType::Ping(_) => {
                     let mut env =
@@ -418,10 +447,12 @@ impl ARCPRuntime {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_tool_invoke(
         &self,
         out: &mpsc::Sender<Envelope>,
         jobs: &JobRegistry,
+        pending_human: &Arc<DashMap<MessageId, oneshot::Sender<HumanResponse>>>,
         connection_token: &CancellationToken,
         correlation_id: MessageId,
         session_id: SessionId,
@@ -463,6 +494,7 @@ impl ARCPRuntime {
 
         let out_clone = out.clone();
         let jobs_clone = jobs.clone();
+        let pending_human_clone = Arc::clone(pending_human);
         let cancel_for_task = cancel;
 
         let join = tokio::spawn(async move {
@@ -476,13 +508,19 @@ impl ARCPRuntime {
             let _ = out_clone.send(started).await;
             jobs_clone.set_state(&job_id, JobState::Running);
 
+            let ctx = ToolContext {
+                cancel: cancel_for_task.clone(),
+                job_id: job_id.clone(),
+                session_id: session_id.clone(),
+                correlation_id: correlation_id.clone(),
+                out: out_clone.clone(),
+                pending_human: pending_human_clone,
+            };
+
             let outcome = tokio::select! {
                 () = cancel_for_task.cancelled() => Outcome::Cancelled("cancellation token fired".into()),
-                result = handler.invoke(payload.arguments, cancel_for_task.clone()) => match result {
+                result = handler.invoke(payload.arguments, ctx) => match result {
                     Ok(value) => Outcome::Completed(value),
-                    // A handler that returns Cancelled is reporting that it
-                    // honoured a cooperative cancel — surface as job.cancelled,
-                    // not job.failed.
                     Err(ARCPError::Cancelled { reason }) => Outcome::Cancelled(reason),
                     Err(e) => Outcome::Failed(e),
                 },

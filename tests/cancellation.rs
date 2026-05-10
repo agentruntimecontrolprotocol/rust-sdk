@@ -15,11 +15,10 @@ use std::time::Duration;
 use arcp::auth::BearerAuthenticator;
 use arcp::error::{ARCPError, ErrorCode};
 use arcp::messages::{Capabilities, ClientIdentity, Credentials};
-use arcp::runtime::{ARCPRuntime, ToolHandler, ToolRegistryBuilder};
+use arcp::runtime::{ARCPRuntime, ToolContext, ToolHandler, ToolRegistryBuilder};
 use arcp::transport::paired;
 use arcp::ARCPClient;
 use async_trait::async_trait;
-use tokio_util::sync::CancellationToken;
 
 /// Tool that loops until cancelled, then returns Ok with a sentinel.
 struct SleeperTool;
@@ -33,11 +32,11 @@ impl ToolHandler for SleeperTool {
     async fn invoke(
         &self,
         _arguments: serde_json::Value,
-        cancel: CancellationToken,
+        ctx: ToolContext,
     ) -> Result<serde_json::Value, ARCPError> {
         loop {
             tokio::select! {
-                () = cancel.cancelled() => {
+                () = ctx.cancel.cancelled() => {
                     return Err(ARCPError::Cancelled { reason: "cooperative".into() });
                 }
                 () = tokio::time::sleep(Duration::from_secs(60)) => {}

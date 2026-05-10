@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio_util::sync::CancellationToken;
 
+use super::context::ToolContext;
 use crate::error::ARCPError;
 
 /// Application-supplied tool handler.
@@ -25,17 +25,19 @@ pub trait ToolHandler: Send + Sync {
     /// Run the tool. Return either an inline JSON result or an error.
     ///
     /// `arguments` is the raw `arguments` block from the envelope.
-    /// `cancel` is the per-job cancellation token; the handler MUST poll
-    /// it cooperatively.
+    /// `ctx` is the per-job [`ToolContext`] — the handler polls
+    /// `ctx.cancel` for cooperative cancellation and uses
+    /// `ctx.request_human_input` etc. to drive RFC §12 round-trips.
     ///
     /// # Errors
     ///
     /// Implementations return [`ARCPError`] for any failure path. The
-    /// runtime maps the error to a `tool.error` envelope on the wire.
+    /// runtime maps the error to a `job.failed` (or `job.cancelled`)
+    /// envelope on the wire.
     async fn invoke(
         &self,
         arguments: serde_json::Value,
-        cancel: CancellationToken,
+        ctx: ToolContext,
     ) -> Result<serde_json::Value, ARCPError>;
 }
 

@@ -17,11 +17,10 @@ use std::sync::Arc;
 use arcp::auth::BearerAuthenticator;
 use arcp::error::ARCPError;
 use arcp::messages::{Capabilities, ClientIdentity, Credentials};
-use arcp::runtime::{ARCPRuntime, ToolHandler, ToolRegistryBuilder};
+use arcp::runtime::{ARCPRuntime, ToolContext, ToolHandler, ToolRegistryBuilder};
 use arcp::transport::paired;
 use arcp::ARCPClient;
 use async_trait::async_trait;
-use tokio_util::sync::CancellationToken;
 
 struct EchoTool;
 
@@ -34,7 +33,7 @@ impl ToolHandler for EchoTool {
     async fn invoke(
         &self,
         arguments: serde_json::Value,
-        _cancel: CancellationToken,
+        _ctx: ToolContext,
     ) -> Result<serde_json::Value, ARCPError> {
         Ok(arguments)
     }
@@ -51,7 +50,7 @@ impl ToolHandler for FailingTool {
     async fn invoke(
         &self,
         _arguments: serde_json::Value,
-        _cancel: CancellationToken,
+        _ctx: ToolContext,
     ) -> Result<serde_json::Value, ARCPError> {
         Err(ARCPError::InvalidArgument {
             detail: "deliberate failure".into(),
