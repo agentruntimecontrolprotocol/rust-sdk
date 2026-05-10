@@ -4,17 +4,23 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
+use super::job::{JobEntry, JobRegistry};
 use super::session::{HandshakePhase, SessionState};
+use super::tools::ToolRegistry;
 use crate::auth::{AuthOutcome, AuthRegistry, Authenticator};
 use crate::envelope::Envelope;
 use crate::error::{ARCPError, ErrorCode};
 use crate::extensions::ExtensionRegistry;
-use crate::ids::{MessageId, SessionId};
+use crate::ids::{JobId, MessageId, SessionId};
 use crate::messages::{
-    Capabilities, MessageType, RuntimeIdentity, SessionAcceptedPayload, SessionLease,
-    SessionOpenPayload, SessionRejectedPayload, SessionUnauthenticatedPayload,
+    CancelPayload, CancelTargetKind, Capabilities, JobAcceptedPayload, JobCancelledPayload,
+    JobCompletedPayload, JobFailedPayload, JobStartedPayload, JobState, MessageType,
+    RuntimeIdentity, SessionAcceptedPayload, SessionLease, SessionOpenPayload,
+    SessionRejectedPayload, SessionUnauthenticatedPayload, ToolInvokePayload,
 };
 use crate::store::eventlog::EventLog;
 use crate::transport::Transport;
@@ -23,6 +29,7 @@ use crate::{IMPL_KIND, IMPL_VERSION};
 /// Runtime configuration.
 pub struct RuntimeBuilder {
     auth: AuthRegistry,
+    tools: ToolRegistry,
     advertised_capabilities: Capabilities,
     runtime_identity: RuntimeIdentity,
     session_lease_seconds: Option<u64>,
@@ -51,6 +58,7 @@ impl RuntimeBuilder {
     pub fn new() -> Self {
         Self {
             auth: AuthRegistry::new(),
+            tools: ToolRegistry::new(),
             advertised_capabilities: Capabilities::default(),
             runtime_identity: RuntimeIdentity {
                 kind: IMPL_KIND.to_owned(),
@@ -66,6 +74,13 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn with_authenticator(mut self, auth: Box<dyn Authenticator>) -> Self {
         self.auth.register(auth);
+        self
+    }
+
+    /// Set the tool registry (replaces any previously set).
+    #[must_use]
+    pub fn with_tools(mut self, tools: ToolRegistry) -> Self {
+        self.tools = tools;
         self
     }
 
@@ -102,6 +117,7 @@ impl RuntimeBuilder {
         Ok(ARCPRuntime {
             inner: Arc::new(RuntimeInner {
                 auth: self.auth,
+                tools: self.tools,
                 advertised_capabilities: self.advertised_capabilities,
                 runtime_identity: self.runtime_identity,
                 session_lease_seconds: self.session_lease_seconds,
@@ -114,6 +130,7 @@ impl RuntimeBuilder {
 
 struct RuntimeInner {
     auth: AuthRegistry,
+    tools: ToolRegistry,
     advertised_capabilities: Capabilities,
     runtime_identity: RuntimeIdentity,
     session_lease_seconds: Option<u64>,
@@ -167,27 +184,49 @@ impl ARCPRuntime {
     ///
     /// Returns [`ARCPError`] for transport / serialisation failures or for
     /// internal protocol errors (rare).
-    pub async fn run_connection<T: Transport>(&self, transport: T) -> Result<(), ARCPError> {
+    #[allow(clippy::too_many_lines)]
+    pub async fn run_connection<T: Transport + 'static>(
+        &self,
+        transport: T,
+    ) -> Result<(), ARCPError> {
+        let transport = Arc::new(transport);
+        // Out-going envelope channel — both the dispatcher and per-job
+        // tasks publish here. A dedicated writer task owns the transport
+        // send side so we never have two callers contending on it.
+        let (out_tx, mut out_rx) = mpsc::channel::<Envelope>(256);
+        let writer_transport = Arc::clone(&transport);
+        let event_log = self.inner.event_log.clone();
+        let writer = tokio::spawn(async move {
+            while let Some(env) = out_rx.recv().await {
+                if let Err(e) = event_log.append(&env).await {
+                    tracing::warn!(error = %e, "failed to persist outbound envelope");
+                }
+                if let Err(e) = writer_transport.send(env).await {
+                    tracing::warn!(error = %e, "transport send failed; closing writer");
+                    break;
+                }
+            }
+        });
+
+        let connection_token = CancellationToken::new();
+        let jobs = JobRegistry::new();
         let mut state: Option<SessionState> = None;
         let mut seen_ids: HashSet<MessageId> = HashSet::new();
 
-        loop {
+        let result = loop {
             let Some(envelope) = transport.recv().await? else {
-                return Ok(());
+                break Ok(());
             };
 
-            // Transport-level idempotency check: drop replays.
+            // Transport-level idempotency check.
             if !seen_ids.insert(envelope.id.clone()) {
                 tracing::debug!(id = %envelope.id, "dropping replayed envelope");
                 continue;
             }
 
-            // Persist before dispatch so the event log records every accepted
-            // envelope (later phases use this for backfill / resume).
+            // Persist incoming envelope.
             self.inner.event_log.append(&envelope).await?;
 
-            // Handshake phase: only handshake messages are permitted before
-            // session.accepted. Drop anything else with a log line per §8.1.
             let in_handshake = state.as_ref().is_none_or(|s| !s.is_accepted());
             if in_handshake && !envelope.payload.is_handshake() {
                 tracing::warn!(
@@ -201,14 +240,14 @@ impl ARCPRuntime {
             match envelope.payload.clone() {
                 MessageType::SessionOpen(payload) => {
                     state = Some(
-                        self.handle_session_open(&transport, envelope.id.clone(), payload)
+                        self.handle_session_open(&out_tx, envelope.id.clone(), payload)
                             .await?,
                     );
                 }
                 MessageType::SessionAuthenticate(payload) => {
                     if let Some(s) = state.as_mut() {
                         self.handle_session_authenticate(
-                            &transport,
+                            &out_tx,
                             envelope.id.clone(),
                             s,
                             &payload.response,
@@ -220,32 +259,63 @@ impl ARCPRuntime {
                 }
                 MessageType::SessionClose(_) => {
                     tracing::info!("session.close received");
-                    return Ok(());
+                    break Ok(());
+                }
+                MessageType::ToolInvoke(payload) => {
+                    if let Some(s) = state.as_ref() {
+                        self.spawn_tool_invoke(
+                            &out_tx,
+                            &jobs,
+                            &connection_token,
+                            envelope.id.clone(),
+                            s.session_id.clone(),
+                            payload,
+                        )
+                        .await;
+                    }
+                }
+                MessageType::Cancel(payload) => {
+                    self.handle_cancel(&out_tx, &jobs, envelope.id.clone(), &payload)
+                        .await;
+                }
+                MessageType::Ping(_) => {
+                    let mut env =
+                        Envelope::new(MessageType::Pong(crate::messages::PongPayload::default()));
+                    env.correlation_id = Some(envelope.id.clone());
+                    if let Some(s) = state.as_ref() {
+                        env.session_id = Some(s.session_id.clone());
+                    }
+                    let _ = out_tx.send(env).await;
                 }
                 _ if in_handshake => {
-                    // Other handshake-classified messages from the client
-                    // (session.challenge, session.accepted, etc.) are not
-                    // expected from the client side — drop with a log line.
                     tracing::warn!(
                         type_name = envelope.payload.type_name(),
                         "unexpected handshake message direction",
                     );
                 }
                 _ => {
-                    // Phase 2 stops here — Phase 3+ wires job/stream/etc.
-                    // dispatch through this match.
                     tracing::debug!(
                         type_name = envelope.payload.type_name(),
-                        "dispatch arm not yet implemented in Phase 2",
+                        "dispatch arm not yet implemented",
                     );
                 }
             }
+        };
+
+        // Tear down: cancel all jobs, drop the out_tx so the writer drains
+        // remaining envelopes, then await the writer.
+        connection_token.cancel();
+        for r in jobs.inner_iter() {
+            r.cancel();
         }
+        drop(out_tx);
+        let _ = writer.await;
+        result
     }
 
-    async fn handle_session_open<T: Transport>(
+    async fn handle_session_open(
         &self,
-        transport: &T,
+        out: &mpsc::Sender<Envelope>,
         correlation_id: MessageId,
         payload: SessionOpenPayload,
     ) -> Result<SessionState, ARCPError> {
@@ -261,12 +331,12 @@ impl ARCPRuntime {
 
         let Some(authenticator) = self.inner.auth.get(&auth.scheme) else {
             self.send_rejected(
-                transport,
+                out,
                 correlation_id,
                 ErrorCode::Unauthenticated,
                 format!("auth scheme {:?} not configured", auth.scheme),
             )
-            .await?;
+            .await;
             state.phase = HandshakePhase::Closed;
             return Ok(state);
         };
@@ -279,8 +349,8 @@ impl ARCPRuntime {
             AuthOutcome::Accept { principal } => {
                 state.principal = Some(principal);
                 state.phase = HandshakePhase::Accepted;
-                self.send_accepted(transport, correlation_id, &session_id, &negotiated)
-                    .await?;
+                self.send_accepted(out, correlation_id, &session_id, &negotiated)
+                    .await;
             }
             AuthOutcome::Challenge { challenge } => {
                 state.active_challenge = Some(challenge.clone());
@@ -292,25 +362,20 @@ impl ARCPRuntime {
                 ));
                 env.correlation_id = Some(correlation_id);
                 env.session_id = Some(session_id);
-                transport.send(env).await?;
+                let _ = out.send(env).await;
             }
             AuthOutcome::Reject { reason } => {
-                self.send_rejected(
-                    transport,
-                    correlation_id,
-                    ErrorCode::Unauthenticated,
-                    reason,
-                )
-                .await?;
+                self.send_rejected(out, correlation_id, ErrorCode::Unauthenticated, reason)
+                    .await;
                 state.phase = HandshakePhase::Closed;
             }
         }
         Ok(state)
     }
 
-    async fn handle_session_authenticate<T: Transport>(
+    async fn handle_session_authenticate(
         &self,
-        transport: &T,
+        out: &mpsc::Sender<Envelope>,
         correlation_id: MessageId,
         state: &mut SessionState,
         response: &str,
@@ -319,9 +384,6 @@ impl ARCPRuntime {
             tracing::warn!("session.authenticate without active challenge; dropping");
             return Ok(());
         };
-        // Phase 2's bearer/none/jwt schemes don't actually use challenges,
-        // but the structure is here for §8.4 re-auth and future schemes.
-        // For now treat the response itself as a token retry.
         for scheme in [
             crate::messages::AuthScheme::Bearer,
             crate::messages::AuthScheme::SignedJwt,
@@ -337,13 +399,8 @@ impl ARCPRuntime {
                     state.principal = Some(principal);
                     state.phase = HandshakePhase::Accepted;
                     state.active_challenge = None;
-                    self.send_accepted(
-                        transport,
-                        correlation_id,
-                        &state.session_id,
-                        &state.capabilities,
-                    )
-                    .await?;
+                    self.send_accepted(out, correlation_id, &state.session_id, &state.capabilities)
+                        .await;
                     return Ok(());
                 }
                 AuthOutcome::Challenge { .. } | AuthOutcome::Reject { .. } => {}
@@ -357,8 +414,152 @@ impl ARCPRuntime {
         ));
         env.correlation_id = Some(correlation_id);
         env.session_id = Some(state.session_id.clone());
-        transport.send(env).await?;
+        let _ = out.send(env).await;
         Ok(())
+    }
+
+    async fn spawn_tool_invoke(
+        &self,
+        out: &mpsc::Sender<Envelope>,
+        jobs: &JobRegistry,
+        connection_token: &CancellationToken,
+        correlation_id: MessageId,
+        session_id: SessionId,
+        payload: ToolInvokePayload,
+    ) {
+        let job_id = JobId::new();
+
+        // job.accepted
+        let mut accepted = Envelope::new(MessageType::JobAccepted(JobAcceptedPayload {
+            job_id: job_id.clone(),
+        }));
+        accepted.correlation_id = Some(correlation_id.clone());
+        accepted.session_id = Some(session_id.clone());
+        accepted.job_id = Some(job_id.clone());
+        let _ = out.send(accepted).await;
+
+        let Some(handler) = self.inner.tools.get(&payload.tool) else {
+            let mut err = Envelope::new(MessageType::JobFailed(JobFailedPayload {
+                code: ErrorCode::NotFound,
+                retryable: Some(false),
+                message: format!("tool not registered: {}", payload.tool),
+                details: None,
+            }));
+            err.correlation_id = Some(correlation_id);
+            err.session_id = Some(session_id);
+            err.job_id = Some(job_id);
+            let _ = out.send(err).await;
+            return;
+        };
+
+        let cancel = connection_token.child_token();
+        let entry = JobEntry {
+            job_id: job_id.clone(),
+            session_id: session_id.clone(),
+            correlation_id: correlation_id.clone(),
+            cancel: cancel.clone(),
+            state: JobState::Accepted,
+        };
+
+        let out_clone = out.clone();
+        let jobs_clone = jobs.clone();
+        let cancel_for_task = cancel;
+
+        let join = tokio::spawn(async move {
+            // job.started
+            let mut started = Envelope::new(MessageType::JobStarted(JobStartedPayload {
+                description: Some(format!("invoking {}", payload.tool)),
+            }));
+            started.correlation_id = Some(correlation_id.clone());
+            started.session_id = Some(session_id.clone());
+            started.job_id = Some(job_id.clone());
+            let _ = out_clone.send(started).await;
+            jobs_clone.set_state(&job_id, JobState::Running);
+
+            let outcome = tokio::select! {
+                () = cancel_for_task.cancelled() => Outcome::Cancelled("cancellation token fired".into()),
+                result = handler.invoke(payload.arguments, cancel_for_task.clone()) => match result {
+                    Ok(value) => Outcome::Completed(value),
+                    // A handler that returns Cancelled is reporting that it
+                    // honoured a cooperative cancel — surface as job.cancelled,
+                    // not job.failed.
+                    Err(ARCPError::Cancelled { reason }) => Outcome::Cancelled(reason),
+                    Err(e) => Outcome::Failed(e),
+                },
+            };
+
+            let terminal = match outcome {
+                Outcome::Completed(value) => {
+                    jobs_clone.set_state(&job_id, JobState::Completed);
+                    MessageType::JobCompleted(JobCompletedPayload {
+                        value: Some(value),
+                        result_ref: None,
+                    })
+                }
+                Outcome::Failed(e) => {
+                    jobs_clone.set_state(&job_id, JobState::Failed);
+                    MessageType::JobFailed(JobFailedPayload {
+                        code: e.code(),
+                        retryable: Some(e.retryable()),
+                        message: e.to_string(),
+                        details: None,
+                    })
+                }
+                Outcome::Cancelled(reason) => {
+                    jobs_clone.set_state(&job_id, JobState::Cancelled);
+                    MessageType::JobCancelled(JobCancelledPayload {
+                        reason: Some(reason),
+                    })
+                }
+            };
+            let mut term = Envelope::new(terminal);
+            term.correlation_id = Some(correlation_id);
+            term.session_id = Some(session_id);
+            term.job_id = Some(job_id);
+            let _ = out_clone.send(term).await;
+        });
+
+        jobs.insert(entry, join);
+    }
+
+    async fn handle_cancel(
+        &self,
+        out: &mpsc::Sender<Envelope>,
+        jobs: &JobRegistry,
+        correlation_id: MessageId,
+        payload: &CancelPayload,
+    ) {
+        let CancelPayload {
+            target, target_id, ..
+        } = payload;
+        match target {
+            CancelTargetKind::Job => {
+                #[allow(clippy::option_if_let_else)] // map_or_else nests too deeply here
+                let response_payload = if let Ok(job_id) = target_id.parse::<JobId>() {
+                    if jobs.cancel(&job_id) {
+                        MessageType::CancelAccepted(crate::messages::CancelAcceptedPayload {
+                            target_id: Some(target_id.clone()),
+                        })
+                    } else {
+                        MessageType::CancelRefused(crate::messages::CancelRefusedPayload {
+                            target_id: target_id.clone(),
+                            reason: "no such in-flight job".into(),
+                        })
+                    }
+                } else {
+                    MessageType::CancelRefused(crate::messages::CancelRefusedPayload {
+                        target_id: target_id.clone(),
+                        reason: "malformed job id".into(),
+                    })
+                };
+                let mut env = Envelope::new(response_payload);
+                env.correlation_id = Some(correlation_id);
+                let _ = out.send(env).await;
+            }
+            CancelTargetKind::Stream | CancelTargetKind::Session => {
+                tracing::warn!(?target, "cancel target not yet implemented");
+            }
+        }
     }
 
     fn negotiate_capabilities(&self, client_caps: &Capabilities) -> Capabilities {
@@ -389,16 +590,14 @@ impl ARCPRuntime {
         }
     }
 
-    async fn send_accepted<T: Transport>(
+    async fn send_accepted(
         &self,
-        transport: &T,
+        out: &mpsc::Sender<Envelope>,
         correlation_id: MessageId,
         session_id: &SessionId,
         capabilities: &Capabilities,
-    ) -> Result<(), ARCPError> {
+    ) {
         let lease = self.inner.session_lease_seconds.map(|s| SessionLease {
-            // Saturate at i64::MAX seconds so an absurd configured lease
-            // can't wrap to a negative chrono::Duration.
             expires_at: chrono::Utc::now()
                 + chrono::Duration::seconds(i64::try_from(s).unwrap_or(i64::MAX)),
         });
@@ -410,23 +609,29 @@ impl ARCPRuntime {
         }));
         env.correlation_id = Some(correlation_id);
         env.session_id = Some(session_id.clone());
-        transport.send(env).await
+        let _ = out.send(env).await;
     }
 
-    async fn send_rejected<T: Transport>(
+    async fn send_rejected(
         &self,
-        transport: &T,
+        out: &mpsc::Sender<Envelope>,
         correlation_id: MessageId,
         code: ErrorCode,
         message: String,
-    ) -> Result<(), ARCPError> {
+    ) {
         let mut env = Envelope::new(MessageType::SessionRejected(SessionRejectedPayload {
             code,
             message,
         }));
         env.correlation_id = Some(correlation_id);
-        transport.send(env).await
+        let _ = out.send(env).await;
     }
+}
+
+enum Outcome {
+    Completed(serde_json::Value),
+    Failed(ARCPError),
+    Cancelled(String),
 }
 
 /// Intersect two boolean capability slots.

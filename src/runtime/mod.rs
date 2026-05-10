@@ -10,8 +10,12 @@
 //! Job state machines, streams, subscriptions, leases, and artifacts land
 //! in Phases 3–5.
 
+pub mod job;
 pub mod server;
 pub mod session;
+pub mod tools;
 
+pub use job::{JobEntry, JobRegistry, JobState};
 pub use server::{ARCPRuntime, RuntimeBuilder};
 pub use session::SessionState;
+pub use tools::{ToolHandler, ToolRegistry, ToolRegistryBuilder};

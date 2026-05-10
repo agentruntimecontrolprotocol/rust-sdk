@@ -26,11 +26,11 @@ Legend: ✅ implemented · 🟡 partial · ⏳ deferred to v0.2 · ➖ not appli
 | 8.5  | Eviction                           | 🟡 (payload typed; runtime triggering in Phase 3+) |
 | 9    | Sessions (stateless, stateful)     | 🟡 (per-session `SessionState` tracked in runtime; resume in Phase 5) |
 | 9    | Sessions (durable across reconnect)| ⏳ v0.2 |
-| 10.1 | Durable Jobs                       | ⏳ |
-| 10.2 | Job States                         | ⏳ |
-| 10.3 | Heartbeats                         | ⏳ |
-| 10.4 | Cancellation                       | ⏳ |
-| 10.5 | Interrupts                         | ⏳ |
+| 10.1 | Durable Jobs                       | 🟡 (in-process tool dispatch + state tracking; persistence/durability deferred) |
+| 10.2 | Job States                         | ✅ (typed `JobState` + transition emissions) |
+| 10.3 | Heartbeats                         | ⏳ (payload typed; watchdog deferred) |
+| 10.4 | Cancellation                       | 🟡 (cooperative cancel via `CancellationToken`; hard-kill escalation deferred) |
+| 10.5 | Interrupts                         | ⏳ (payload typed; runtime trigger deferred) |
 | 10.6 | Scheduled Jobs                     | ⏳ v0.2 |
 | 11.1 | Stream Kinds                       | ⏳ |
 | 11.2 | Backpressure                       | ⏳ |

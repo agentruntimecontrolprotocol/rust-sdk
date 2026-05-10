@@ -7,5 +7,5 @@
 pub mod api;
 pub mod handlers;
 
-pub use api::{ARCPClient, Authenticated, Session, Unauthenticated};
+pub use api::{ARCPClient, Authenticated, JobHandle, Session, Unauthenticated};
 pub use handlers::{HumanInputHandler, NoopHumanInputHandler};
