@@ -1,0 +1,96 @@
+# Pinning policy:
+# - Third-party actions are pinned to a full commit SHA with a version comment.
+# - First-party `actions/*` actions may use a major version tag (per GitHub's
+#   own guidance), since they are maintained by GitHub.
+# Note: this repo ships a `rust-toolchain.toml` pinned to `stable`. To make the
+# matrix actually exercise both MSRV and stable we set a directory override
+# with `rustup override set` after installing the requested toolchain.
+name: test
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".gitignore"
+      - ".editorconfig"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".gitignore"
+      - ".editorconfig"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # MSRV is read from `Cargo.toml` (`rust-version = "1.83"`). Keep in sync.
+        rust: ["1.83", "stable"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust toolchain (${{ matrix.rust }})
+        # dtolnay/rust-toolchain @ master (pinned to SHA below)
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-04
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+
+      - name: Override repo toolchain for this directory
+        run: rustup override set ${{ matrix.rust }}
+
+      - name: Print toolchain versions
+        run: |
+          rustc --version
+          cargo --version
+          cargo fmt --version
+          cargo clippy --version
+
+      - name: Cache cargo registry and target
+        # Swatinem/rust-cache v2.7.5
+        uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          key: ${{ matrix.rust }}
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo build
+        run: cargo build --all-targets --all-features
+
+      - name: cargo test
+        run: cargo test --all-targets --all-features
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts-${{ matrix.rust }}
+          path: |
+            target/debug/deps/*.log
+            target/nextest/**
+            target/debug/test-results/**
+          if-no-files-found: ignore
+          retention-days: 7
