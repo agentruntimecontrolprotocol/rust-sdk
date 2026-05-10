@@ -66,5 +66,5 @@ Legend: ✅ implemented · 🟡 partial · ⏳ deferred to v0.2 · ➖ not appli
 | 19   | Resumability (checkpoint)          | ⏳ v0.2 |
 | 20   | MCP Compatibility                  | ➖ (advisory) |
 | 21   | Extensions                         | ✅ (namespace validation + classifier) |
-| 22   | Reference Transports (WS, stdio)   | ⏳ |
+| 22   | Reference Transports (WS, stdio)   | ✅ (real `WebSocket` over loopback + stdio over duplex; reconnect deferred) |
 | 22   | Reference Transports (HTTP/2,QUIC) | ⏳ v0.2 |
