@@ -130,3 +130,95 @@ impl JobRegistry {
         self.inner.iter().map(|r| r.entry.cancel.clone()).collect()
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::missing_panics_doc
+)]
+mod tests {
+    use super::*;
+    use crate::ids::{JobId, MessageId, SessionId};
+
+    fn make_entry(state: JobState) -> (JobEntry, tokio::task::JoinHandle<()>) {
+        let cancel = CancellationToken::new();
+        let entry = JobEntry {
+            job_id: JobId::new(),
+            session_id: SessionId::new(),
+            correlation_id: MessageId::new(),
+            cancel,
+            state,
+        };
+        // A no-op task so the JoinHandle is well-formed.
+        let join = tokio::spawn(async {});
+        (entry, join)
+    }
+
+    #[test]
+    fn job_state_terminals_are_classified_correctly() {
+        for s in [JobState::Completed, JobState::Failed, JobState::Cancelled] {
+            assert!(s.is_terminal(), "{s:?} should be terminal");
+        }
+        for s in [
+            JobState::Accepted,
+            JobState::Queued,
+            JobState::Running,
+            JobState::Blocked,
+            JobState::Paused,
+        ] {
+            assert!(!s.is_terminal(), "{s:?} should NOT be terminal");
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_insert_and_set_state_round_trip() {
+        let reg = JobRegistry::new();
+        assert!(reg.is_empty());
+        let (entry, join) = make_entry(JobState::Accepted);
+        let id = entry.job_id.clone();
+        reg.insert(entry, join);
+        assert_eq!(reg.len(), 1);
+        reg.set_state(&id, JobState::Running);
+    }
+
+    #[tokio::test]
+    async fn cancel_returns_false_for_unknown_job() {
+        let reg = JobRegistry::new();
+        let id = JobId::new();
+        assert!(!reg.cancel(&id));
+    }
+
+    #[tokio::test]
+    async fn cancel_triggers_token_for_known_job() {
+        let reg = JobRegistry::new();
+        let (entry, join) = make_entry(JobState::Running);
+        let token = entry.cancel.clone();
+        let id = entry.job_id.clone();
+        reg.insert(entry, join);
+        assert!(reg.cancel(&id));
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn sweep_terminals_drops_only_terminal_jobs() {
+        let reg = JobRegistry::new();
+        let (running, jh1) = make_entry(JobState::Running);
+        let (done, jh2) = make_entry(JobState::Completed);
+        let running_id = running.job_id.clone();
+        let done_id = done.job_id.clone();
+        reg.insert(running, jh1);
+        reg.insert(done, jh2);
+        assert_eq!(reg.len(), 2);
+        reg.sweep_terminals();
+        assert_eq!(reg.len(), 1);
+        // Sweep is idempotent.
+        reg.sweep_terminals();
+        assert_eq!(reg.len(), 1);
+        // Running job is the survivor; cancel still finds it.
+        assert!(reg.cancel(&running_id));
+        // Terminal job was already swept.
+        assert!(!reg.cancel(&done_id));
+    }
+}

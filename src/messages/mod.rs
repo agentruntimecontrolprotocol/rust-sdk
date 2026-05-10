@@ -660,4 +660,439 @@ mod tests {
         .is_handshake());
         assert!(!MessageType::Ping(PingPayload::default()).is_handshake());
     }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn type_name_covers_every_variant() {
+        // One instance per MessageType variant. Any future variant added
+        // to MessageType but not to this list will fall through to the
+        // exhaustive match in MessageType::type_name and the test will
+        // surface the omission as a 0%-coverage spike on the new arm.
+        let now = chrono::Utc::now();
+        let cases: Vec<(MessageType, &'static str)> = vec![
+            (
+                MessageType::SessionOpen(SessionOpenPayload {
+                    auth: Credentials {
+                        scheme: AuthScheme::None,
+                        token: None,
+                    },
+                    client: ClientIdentity {
+                        kind: "t".into(),
+                        version: "0".into(),
+                        fingerprint: None,
+                        principal: None,
+                    },
+                    capabilities: Capabilities::default(),
+                }),
+                "session.open",
+            ),
+            (
+                MessageType::SessionChallenge(SessionChallengePayload {
+                    challenge: "x".into(),
+                }),
+                "session.challenge",
+            ),
+            (
+                MessageType::SessionAuthenticate(SessionAuthenticatePayload {
+                    response: "x".into(),
+                }),
+                "session.authenticate",
+            ),
+            (
+                MessageType::SessionAccepted(SessionAcceptedPayload {
+                    session_id: crate::ids::SessionId::new(),
+                    runtime: crate::messages::RuntimeIdentity {
+                        kind: "rt".into(),
+                        version: "0".into(),
+                        fingerprint: None,
+                        trust_level: None,
+                    },
+                    capabilities: Capabilities::default(),
+                    lease: None,
+                }),
+                "session.accepted",
+            ),
+            (
+                MessageType::SessionUnauthenticated(SessionUnauthenticatedPayload {
+                    code: crate::error::ErrorCode::Unauthenticated,
+                    message: "x".into(),
+                }),
+                "session.unauthenticated",
+            ),
+            (
+                MessageType::SessionRejected(SessionRejectedPayload {
+                    code: crate::error::ErrorCode::Unauthenticated,
+                    message: "x".into(),
+                }),
+                "session.rejected",
+            ),
+            (
+                MessageType::SessionRefresh(SessionRefreshPayload {
+                    deadline: now,
+                    challenge: None,
+                }),
+                "session.refresh",
+            ),
+            (
+                MessageType::SessionEvicted(SessionEvictedPayload {
+                    code: crate::error::ErrorCode::Cancelled,
+                    reason: "x".into(),
+                }),
+                "session.evicted",
+            ),
+            (
+                MessageType::SessionClose(SessionClosePayload::default()),
+                "session.close",
+            ),
+            (MessageType::Ping(PingPayload::default()), "ping"),
+            (MessageType::Pong(PongPayload::default()), "pong"),
+            (MessageType::Ack(AckPayload { note: None }), "ack"),
+            (
+                MessageType::Nack(NackPayload {
+                    code: crate::error::ErrorCode::Unknown,
+                    message: "x".into(),
+                    details: None,
+                }),
+                "nack",
+            ),
+            (
+                MessageType::Cancel(CancelPayload {
+                    target: CancelTargetKind::Job,
+                    target_id: "x".into(),
+                    reason: None,
+                    deadline_ms: None,
+                }),
+                "cancel",
+            ),
+            (
+                MessageType::CancelAccepted(CancelAcceptedPayload { target_id: None }),
+                "cancel.accepted",
+            ),
+            (
+                MessageType::CancelRefused(CancelRefusedPayload {
+                    target_id: "x".into(),
+                    reason: "x".into(),
+                }),
+                "cancel.refused",
+            ),
+            (
+                MessageType::Interrupt(InterruptPayload {
+                    target: CancelTargetKind::Job,
+                    target_id: "x".into(),
+                    prompt: "x".into(),
+                }),
+                "interrupt",
+            ),
+            (MessageType::Resume(ResumePayload::default()), "resume"),
+            (
+                MessageType::Backpressure(BackpressurePayload {
+                    desired_rate_per_second: None,
+                    buffer_remaining_bytes: None,
+                    reason: None,
+                }),
+                "backpressure",
+            ),
+            (
+                MessageType::ToolInvoke(ToolInvokePayload {
+                    tool: "x".into(),
+                    arguments: serde_json::json!({}),
+                }),
+                "tool.invoke",
+            ),
+            (
+                MessageType::ToolResult(ToolResultPayload {
+                    value: None,
+                    result_ref: None,
+                }),
+                "tool.result",
+            ),
+            (
+                MessageType::ToolError(ToolErrorPayload {
+                    code: crate::error::ErrorCode::Internal,
+                    retryable: None,
+                    message: "x".into(),
+                    details: None,
+                }),
+                "tool.error",
+            ),
+            (
+                MessageType::JobAccepted(JobAcceptedPayload {
+                    job_id: crate::ids::JobId::new(),
+                }),
+                "job.accepted",
+            ),
+            (
+                MessageType::JobStarted(JobStartedPayload { description: None }),
+                "job.started",
+            ),
+            (
+                MessageType::JobProgress(JobProgressPayload {
+                    percent: None,
+                    message: None,
+                }),
+                "job.progress",
+            ),
+            (
+                MessageType::JobHeartbeat(JobHeartbeatPayload {
+                    sequence: 1,
+                    deadline_ms: None,
+                    state: JobState::Running,
+                }),
+                "job.heartbeat",
+            ),
+            (
+                MessageType::JobCompleted(JobCompletedPayload {
+                    value: None,
+                    result_ref: None,
+                }),
+                "job.completed",
+            ),
+            (
+                MessageType::JobFailed(JobFailedPayload {
+                    code: crate::error::ErrorCode::Internal,
+                    retryable: None,
+                    message: "x".into(),
+                    details: None,
+                }),
+                "job.failed",
+            ),
+            (
+                MessageType::JobCancelled(JobCancelledPayload { reason: None }),
+                "job.cancelled",
+            ),
+            (
+                MessageType::StreamOpen(StreamOpenPayload {
+                    kind: StreamKind::Text,
+                    content_type: None,
+                    encoding: None,
+                }),
+                "stream.open",
+            ),
+            (
+                MessageType::StreamChunk(StreamChunkPayload {
+                    sequence: 0,
+                    data: serde_json::json!(""),
+                    content_type: None,
+                    sha256: None,
+                    redacted: false,
+                    role: None,
+                }),
+                "stream.chunk",
+            ),
+            (
+                MessageType::StreamClose(StreamClosePayload::default()),
+                "stream.close",
+            ),
+            (
+                MessageType::StreamError(StreamErrorPayload {
+                    code: crate::error::ErrorCode::Internal,
+                    message: "x".into(),
+                }),
+                "stream.error",
+            ),
+            (
+                MessageType::HumanInputRequest(HumanInputRequestPayload {
+                    prompt: "x".into(),
+                    response_schema: serde_json::json!({}),
+                    default: None,
+                    expires_at: now,
+                }),
+                "human.input.request",
+            ),
+            (
+                MessageType::HumanInputResponse(HumanInputResponsePayload {
+                    value: serde_json::json!(null),
+                    responded_by: "x".into(),
+                    responded_at: now,
+                }),
+                "human.input.response",
+            ),
+            (
+                MessageType::HumanChoiceRequest(HumanChoiceRequestPayload {
+                    prompt: "x".into(),
+                    options: vec![],
+                    expires_at: now,
+                }),
+                "human.choice.request",
+            ),
+            (
+                MessageType::HumanChoiceResponse(HumanChoiceResponsePayload {
+                    choice_id: "x".into(),
+                    responded_by: "x".into(),
+                    responded_at: now,
+                }),
+                "human.choice.response",
+            ),
+            (
+                MessageType::HumanInputCancelled(HumanInputCancelledPayload {
+                    code: crate::error::ErrorCode::DeadlineExceeded,
+                    message: None,
+                }),
+                "human.input.cancelled",
+            ),
+            (
+                MessageType::PermissionRequest(PermissionRequestPayload {
+                    permission: "p".into(),
+                    resource: "r".into(),
+                    operation: "o".into(),
+                    reason: None,
+                    requested_lease_seconds: None,
+                }),
+                "permission.request",
+            ),
+            (
+                MessageType::PermissionGrant(PermissionGrantPayload {
+                    permission: "p".into(),
+                    resource: "r".into(),
+                    operation: "o".into(),
+                    lease_seconds: 1,
+                }),
+                "permission.grant",
+            ),
+            (
+                MessageType::PermissionDeny(PermissionDenyPayload {
+                    permission: "p".into(),
+                    reason: "x".into(),
+                }),
+                "permission.deny",
+            ),
+            (
+                MessageType::LeaseGranted(LeaseGrantedPayload {
+                    lease_id: crate::ids::LeaseId::new(),
+                    permission: "p".into(),
+                    resource: "r".into(),
+                    operation: "o".into(),
+                    expires_at: now,
+                }),
+                "lease.granted",
+            ),
+            (
+                MessageType::LeaseExtended(LeaseExtendedPayload {
+                    lease_id: crate::ids::LeaseId::new(),
+                    expires_at: now,
+                }),
+                "lease.extended",
+            ),
+            (
+                MessageType::LeaseRevoked(LeaseRevokedPayload {
+                    lease_id: crate::ids::LeaseId::new(),
+                    reason: "x".into(),
+                }),
+                "lease.revoked",
+            ),
+            (
+                MessageType::LeaseRefresh(LeaseRefreshPayload {
+                    lease_id: crate::ids::LeaseId::new(),
+                    additional_seconds: 1,
+                }),
+                "lease.refresh",
+            ),
+            (
+                MessageType::Subscribe(SubscribePayload::default()),
+                "subscribe",
+            ),
+            (
+                MessageType::SubscribeAccepted(SubscribeAcceptedPayload {
+                    subscription_id: crate::ids::SubscriptionId::new(),
+                }),
+                "subscribe.accepted",
+            ),
+            (
+                MessageType::SubscribeEvent(SubscribeEventPayload {
+                    event: serde_json::json!({}),
+                }),
+                "subscribe.event",
+            ),
+            (
+                MessageType::Unsubscribe(UnsubscribePayload {
+                    subscription_id: crate::ids::SubscriptionId::new(),
+                }),
+                "unsubscribe",
+            ),
+            (
+                MessageType::SubscribeClosed(SubscribeClosedPayload {
+                    subscription_id: crate::ids::SubscriptionId::new(),
+                    code: crate::error::ErrorCode::Cancelled,
+                    reason: "x".into(),
+                }),
+                "subscribe.closed",
+            ),
+            (
+                MessageType::ArtifactPut(ArtifactPutPayload {
+                    media_type: "x".into(),
+                    data: String::new(),
+                    sha256: None,
+                    retain_seconds: None,
+                }),
+                "artifact.put",
+            ),
+            (
+                MessageType::ArtifactFetch(ArtifactFetchPayload {
+                    artifact_id: crate::ids::ArtifactId::new(),
+                }),
+                "artifact.fetch",
+            ),
+            (
+                MessageType::ArtifactRef(ArtifactRefPayload {
+                    artifact: ArtifactRef {
+                        artifact_id: crate::ids::ArtifactId::new(),
+                        uri: "arcp://x".into(),
+                        media_type: "x".into(),
+                        size: 0,
+                        sha256: None,
+                        expires_at: None,
+                    },
+                }),
+                "artifact.ref",
+            ),
+            (
+                MessageType::ArtifactRelease(ArtifactReleasePayload {
+                    artifact_id: crate::ids::ArtifactId::new(),
+                }),
+                "artifact.release",
+            ),
+            (
+                MessageType::EventEmit(EventEmitPayload {
+                    name: "x".into(),
+                    data: None,
+                }),
+                "event.emit",
+            ),
+            (
+                MessageType::Log(LogPayload {
+                    level: LogLevel::Info,
+                    message: "x".into(),
+                    attributes: None,
+                }),
+                "log",
+            ),
+            (
+                MessageType::Metric(MetricPayload {
+                    name: "x".into(),
+                    value: 0.0,
+                    unit: "u".into(),
+                    dims: None,
+                }),
+                "metric",
+            ),
+            (
+                MessageType::TraceSpan(TraceSpanPayload {
+                    name: "x".into(),
+                    trace_id: crate::ids::TraceId::new("t").expect("non-empty"),
+                    span_id: crate::ids::SpanId::new("s").expect("non-empty"),
+                    parent_span_id: None,
+                    start_time: now,
+                    end_time: now,
+                    attributes: None,
+                }),
+                "trace.span",
+            ),
+        ];
+        for (msg, expected) in &cases {
+            assert_eq!(msg.type_name(), *expected);
+        }
+        // 58 message variants — sanity-check we built exactly that many.
+        // Bump this when MessageType grows in v0.2.
+        assert_eq!(cases.len(), 58);
+    }
 }

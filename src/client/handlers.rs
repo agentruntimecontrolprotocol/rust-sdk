@@ -35,3 +35,72 @@ impl HumanInputHandler for NoopHumanInputHandler {
             .unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::missing_panics_doc
+)]
+mod tests {
+    use chrono::Utc;
+
+    use super::*;
+    use crate::messages::ChoiceOption;
+
+    #[tokio::test]
+    async fn input_returns_default_when_present() {
+        let h = NoopHumanInputHandler;
+        let req = HumanInputRequestPayload {
+            prompt: "?".into(),
+            response_schema: serde_json::json!({}),
+            default: Some(serde_json::json!({"name": "alice"})),
+            expires_at: Utc::now(),
+        };
+        assert_eq!(h.input(req).await, serde_json::json!({"name": "alice"}));
+    }
+
+    #[tokio::test]
+    async fn input_returns_null_when_no_default() {
+        let h = NoopHumanInputHandler;
+        let req = HumanInputRequestPayload {
+            prompt: "?".into(),
+            response_schema: serde_json::json!({}),
+            default: None,
+            expires_at: Utc::now(),
+        };
+        assert_eq!(h.input(req).await, serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn choice_picks_first_option() {
+        let h = NoopHumanInputHandler;
+        let req = HumanChoiceRequestPayload {
+            prompt: "?".into(),
+            options: vec![
+                ChoiceOption {
+                    id: "a".into(),
+                    label: "A".into(),
+                },
+                ChoiceOption {
+                    id: "b".into(),
+                    label: "B".into(),
+                },
+            ],
+            expires_at: Utc::now(),
+        };
+        assert_eq!(h.choice(req).await, "a");
+    }
+
+    #[tokio::test]
+    async fn choice_returns_empty_string_for_empty_options() {
+        let h = NoopHumanInputHandler;
+        let req = HumanChoiceRequestPayload {
+            prompt: "?".into(),
+            options: vec![],
+            expires_at: Utc::now(),
+        };
+        assert_eq!(h.choice(req).await, "");
+    }
+}

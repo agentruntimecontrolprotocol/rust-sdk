@@ -27,7 +27,8 @@ inside the crate. The crate's job is to make that document executable.
   type/min-priority)
 - Two real transports (§22): WebSocket via `tokio-tungstenite` and stdio
   via newline-delimited JSON over `AsyncRead` / `AsyncWrite`
-- 86 tests, all five gates clean across feature-flag combinations
+- 127 tests, all five gates clean across feature-flag combinations
+- 86% line coverage via `cargo llvm-cov` — see [`scripts/coverage.sh`](./scripts/coverage.sh)
 
 ## Quickstart
 
@@ -43,6 +44,12 @@ cargo run --example 02_tool_invoke
 cargo run -- serve
 # Or with a bearer token:
 cargo run -- serve --bearer secret-token --principal alice@example.com
+
+# Coverage report (requires rustup + llvm-tools-preview component)
+cargo install cargo-llvm-cov
+rustup component add llvm-tools-preview
+scripts/coverage.sh                 # human-readable summary
+scripts/coverage.sh --html          # HTML report under target/llvm-cov
 ```
 
 ## Architecture

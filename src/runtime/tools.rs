@@ -118,3 +118,76 @@ impl ToolRegistryBuilder {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::missing_panics_doc
+)]
+mod tests {
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+
+    struct EchoTool;
+
+    #[async_trait]
+    impl ToolHandler for EchoTool {
+        fn name(&self) -> &'static str {
+            "echo"
+        }
+
+        async fn invoke(
+            &self,
+            arguments: serde_json::Value,
+            _ctx: ToolContext,
+        ) -> Result<serde_json::Value, ARCPError> {
+            Ok(arguments)
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_round_trips_through_builder() {
+        let reg = ToolRegistryBuilder::new().with(Arc::new(EchoTool)).build();
+        assert!(!reg.is_empty());
+        assert_eq!(reg.len(), 1);
+        let echo = reg.get("echo").expect("registered");
+        assert_eq!(echo.name(), "echo");
+
+        // Invoking the handler through the trait obj exercises the dyn dispatch.
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let ctx = ToolContext {
+            cancel: CancellationToken::new(),
+            job_id: crate::ids::JobId::new(),
+            session_id: crate::ids::SessionId::new(),
+            correlation_id: crate::ids::MessageId::new(),
+            out: tx,
+            pending_human: Arc::new(dashmap::DashMap::new()),
+        };
+        let result = echo
+            .invoke(serde_json::json!({"k": 1}), ctx)
+            .await
+            .expect("invoke");
+        assert_eq!(result, serde_json::json!({"k": 1}));
+    }
+
+    #[test]
+    fn empty_registry_reports_empty() {
+        let reg = ToolRegistry::new();
+        assert!(reg.is_empty());
+        assert_eq!(reg.len(), 0);
+        assert!(reg.get("missing").is_none());
+    }
+
+    #[test]
+    fn debug_impls_render_without_panicking() {
+        let reg = ToolRegistryBuilder::new().with(Arc::new(EchoTool)).build();
+        let s = format!("{reg:?}");
+        assert!(s.contains("echo"));
+        let builder = ToolRegistryBuilder::new().with(Arc::new(EchoTool));
+        let bs = format!("{builder:?}");
+        assert!(bs.contains("echo"));
+    }
+}

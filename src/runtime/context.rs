@@ -130,3 +130,127 @@ impl ToolContext {
         &self.job_id
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::missing_panics_doc
+)]
+mod tests {
+    use chrono::Utc;
+    use dashmap::DashMap;
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::messages::{ChoiceOption, HumanChoiceRequestPayload, HumanInputRequestPayload};
+
+    fn build_ctx() -> (
+        ToolContext,
+        mpsc::Receiver<Envelope>,
+        Arc<DashMap<MessageId, oneshot::Sender<HumanResponse>>>,
+    ) {
+        let (out_tx, out_rx) = mpsc::channel(8);
+        let pending: Arc<DashMap<MessageId, oneshot::Sender<HumanResponse>>> =
+            Arc::new(DashMap::new());
+        let ctx = ToolContext {
+            cancel: CancellationToken::new(),
+            job_id: JobId::new(),
+            session_id: SessionId::new(),
+            correlation_id: MessageId::new(),
+            out: out_tx,
+            pending_human: Arc::clone(&pending),
+        };
+        (ctx, out_rx, pending)
+    }
+
+    fn input_request() -> HumanInputRequestPayload {
+        HumanInputRequestPayload {
+            prompt: "?".into(),
+            response_schema: serde_json::json!({}),
+            default: None,
+            expires_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn accessors_return_internal_ids() {
+        let (ctx, _rx, _pending) = build_ctx();
+        // Just exercise the const accessors so they're covered.
+        assert!(ctx.correlation_id().as_str().starts_with("msg_"));
+        assert!(ctx.job_id().as_str().starts_with("job_"));
+    }
+
+    #[tokio::test]
+    async fn input_round_trip_resolves_via_pending_map() {
+        let (ctx, mut rx, pending) = build_ctx();
+        let task = tokio::spawn(async move { ctx.request_human_input(input_request()).await });
+        let env = rx.recv().await.expect("envelope");
+        let id = env.id.clone();
+        let (_, tx) = pending.remove(&id).expect("pending entry");
+        tx.send(HumanResponse::Value(serde_json::json!({"ok": true})))
+            .expect("send");
+        let result = task.await.expect("join");
+        assert_eq!(result.expect("ok"), serde_json::json!({"ok": true}));
+    }
+
+    #[tokio::test]
+    async fn input_returns_invalid_argument_on_choice_response() {
+        let (ctx, mut rx, pending) = build_ctx();
+        let task = tokio::spawn(async move { ctx.request_human_input(input_request()).await });
+        let env = rx.recv().await.expect("envelope");
+        let (_, tx) = pending.remove(&env.id).expect("pending");
+        tx.send(HumanResponse::Choice("nope".into())).expect("send");
+        let err = task.await.expect("join").expect_err("must error");
+        assert!(matches!(err, ARCPError::InvalidArgument { .. }));
+    }
+
+    #[tokio::test]
+    async fn input_propagates_cancellation_code() {
+        let (ctx, mut rx, pending) = build_ctx();
+        let task = tokio::spawn(async move { ctx.request_human_input(input_request()).await });
+        let env = rx.recv().await.expect("envelope");
+        let (_, tx) = pending.remove(&env.id).expect("pending");
+        tx.send(HumanResponse::Cancelled(ErrorCode::DeadlineExceeded))
+            .expect("send");
+        let err = task.await.expect("join").expect_err("must error");
+        assert!(matches!(err, ARCPError::Cancelled { .. }));
+    }
+
+    #[tokio::test]
+    async fn choice_round_trip_resolves_via_pending_map() {
+        let (ctx, mut rx, pending) = build_ctx();
+        let payload = HumanChoiceRequestPayload {
+            prompt: "?".into(),
+            options: vec![ChoiceOption {
+                id: "x".into(),
+                label: "X".into(),
+            }],
+            expires_at: Utc::now(),
+        };
+        let task = tokio::spawn(async move { ctx.request_human_choice(payload).await });
+        let env = rx.recv().await.expect("envelope");
+        let (_, tx) = pending.remove(&env.id).expect("pending");
+        tx.send(HumanResponse::Choice("x".into())).expect("send");
+        let chosen = task.await.expect("join").expect("ok");
+        assert_eq!(chosen, "x");
+    }
+
+    #[tokio::test]
+    async fn choice_returns_invalid_argument_on_value_response() {
+        let (ctx, mut rx, pending) = build_ctx();
+        let payload = HumanChoiceRequestPayload {
+            prompt: "?".into(),
+            options: vec![],
+            expires_at: Utc::now(),
+        };
+        let task = tokio::spawn(async move { ctx.request_human_choice(payload).await });
+        let env = rx.recv().await.expect("envelope");
+        let (_, tx) = pending.remove(&env.id).expect("pending");
+        tx.send(HumanResponse::Value(serde_json::json!(null)))
+            .expect("send");
+        let err = task.await.expect("join").expect_err("must error");
+        assert!(matches!(err, ARCPError::InvalidArgument { .. }));
+    }
+}

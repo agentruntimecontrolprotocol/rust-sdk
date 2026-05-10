@@ -70,3 +70,120 @@ impl Authenticator for SignedJwtAuthenticator {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::missing_panics_doc
+)]
+mod tests {
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use serde::Serialize;
+
+    use super::*;
+    use crate::messages::{AuthScheme, Capabilities, ClientIdentity, Credentials};
+
+    #[derive(Serialize)]
+    struct Mint<'a> {
+        sub: &'a str,
+        aud: &'a str,
+        exp: usize,
+    }
+
+    fn ident() -> ClientIdentity {
+        ClientIdentity {
+            kind: "test".into(),
+            version: "0".into(),
+            fingerprint: None,
+            principal: None,
+        }
+    }
+
+    fn mint(secret: &[u8], sub: &str, aud: &str) -> String {
+        let claims = Mint {
+            sub,
+            aud,
+            exp: 9_999_999_999,
+        };
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret),
+        )
+        .expect("encode")
+    }
+
+    #[tokio::test]
+    async fn valid_jwt_accepts_with_sub_as_principal() {
+        let secret = b"shared-test-secret-9876543210";
+        let auth = SignedJwtAuthenticator::hs256(secret, "arcp-test-runtime");
+        let token = mint(secret, "alice@example.com", "arcp-test-runtime");
+        let creds = Credentials {
+            scheme: AuthScheme::SignedJwt,
+            token: Some(token),
+        };
+        let outcome = auth
+            .authenticate(&creds, &ident(), &Capabilities::default())
+            .await
+            .expect("auth call ok");
+        match outcome {
+            AuthOutcome::Accept { principal } => {
+                assert_eq!(principal, "alice@example.com");
+            }
+            other => panic!("expected Accept, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn jwt_for_wrong_audience_is_rejected() {
+        let secret = b"shared-test-secret-9876543210";
+        let auth = SignedJwtAuthenticator::hs256(secret, "arcp-test-runtime");
+        let token = mint(secret, "alice", "some-other-audience");
+        let creds = Credentials {
+            scheme: AuthScheme::SignedJwt,
+            token: Some(token),
+        };
+        let outcome = auth
+            .authenticate(&creds, &ident(), &Capabilities::default())
+            .await
+            .expect("auth call ok");
+        assert!(matches!(outcome, AuthOutcome::Reject { .. }));
+    }
+
+    #[tokio::test]
+    async fn jwt_with_wrong_secret_is_rejected() {
+        let auth = SignedJwtAuthenticator::hs256(b"server-secret", "arcp-test-runtime");
+        let token = mint(b"attacker-secret", "alice", "arcp-test-runtime");
+        let creds = Credentials {
+            scheme: AuthScheme::SignedJwt,
+            token: Some(token),
+        };
+        let outcome = auth
+            .authenticate(&creds, &ident(), &Capabilities::default())
+            .await
+            .expect("auth call ok");
+        assert!(matches!(outcome, AuthOutcome::Reject { .. }));
+    }
+
+    #[tokio::test]
+    async fn missing_token_is_rejected() {
+        let auth = SignedJwtAuthenticator::hs256(b"x", "rt");
+        let creds = Credentials {
+            scheme: AuthScheme::SignedJwt,
+            token: None,
+        };
+        let outcome = auth
+            .authenticate(&creds, &ident(), &Capabilities::default())
+            .await
+            .expect("auth call ok");
+        assert!(matches!(outcome, AuthOutcome::Reject { .. }));
+    }
+
+    #[test]
+    fn scheme_reports_signed_jwt() {
+        let auth = SignedJwtAuthenticator::hs256(b"x", "rt");
+        assert!(matches!(auth.scheme(), AuthScheme::SignedJwt));
+    }
+}

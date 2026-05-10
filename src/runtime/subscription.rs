@@ -257,4 +257,73 @@ mod tests {
         assert!(mgr.unsubscribe(&id));
         assert!(mgr.is_empty());
     }
+
+    #[tokio::test]
+    async fn unsubscribe_returns_false_for_unknown_id() {
+        let mgr = SubscriptionManager::new();
+        let id = SubscriptionId::new();
+        assert!(!mgr.unsubscribe(&id));
+    }
+
+    #[tokio::test]
+    async fn drop_session_keeps_other_sessions() {
+        let mgr = SubscriptionManager::new();
+        let s1 = SessionId::new();
+        let s2 = SessionId::new();
+        let (_id1, _rx1) = mgr.register(SubscriptionFilter::default(), s1.clone());
+        let (_id2, _rx2) = mgr.register(SubscriptionFilter::default(), s2);
+        assert_eq!(mgr.len(), 2);
+        mgr.drop_session(&s1);
+        assert_eq!(mgr.len(), 1);
+    }
+
+    #[test]
+    fn matches_handles_every_field_combination() {
+        let session = SessionId::new();
+        let trace = crate::ids::TraceId::new("t").expect("non-empty");
+        let job = crate::ids::JobId::new();
+        let stream = crate::ids::StreamId::new();
+
+        let mut env = ping_for(&session);
+        env.trace_id = Some(trace.clone());
+        env.job_id = Some(job.clone());
+        env.stream_id = Some(stream.clone());
+
+        let filter = SubscriptionFilter {
+            session_id: vec![session.clone()],
+            trace_id: vec![trace],
+            job_id: vec![job],
+            stream_id: vec![stream],
+            types: vec!["ping".into()],
+            min_priority: Some(crate::envelope::Priority::Low),
+        };
+        assert!(matches(&filter, &env));
+
+        // No session id on envelope but filter requires one => no match.
+        let mut bare = Envelope::new(MessageType::Ping(PingPayload::default()));
+        bare.session_id = None;
+        let session_only = SubscriptionFilter {
+            session_id: vec![session],
+            ..SubscriptionFilter::default()
+        };
+        assert!(!matches(&session_only, &bare));
+    }
+
+    #[test]
+    fn debug_renders() {
+        let mgr = SubscriptionManager::new();
+        let _ = format!("{mgr:?}");
+        let s = SessionId::new();
+        let (_id, rx) = mgr.register(SubscriptionFilter::default(), s);
+        let _ = format!("{rx:?}");
+    }
+
+    #[tokio::test]
+    async fn closed_bus_makes_receiver_yield_none() {
+        let mgr = SubscriptionManager::new();
+        let s = SessionId::new();
+        let (_id, mut rx) = mgr.register(SubscriptionFilter::default(), s);
+        drop(mgr); // drop sender side
+        assert!(rx.next().await.is_none());
+    }
 }
