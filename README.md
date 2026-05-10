@@ -27,8 +27,13 @@ inside the crate. The crate's job is to make that document executable.
   type/min-priority)
 - Two real transports (§22): WebSocket via `tokio-tungstenite` and stdio
   via newline-delimited JSON over `AsyncRead` / `AsyncWrite`
-- 127 tests, all five gates clean across feature-flag combinations
-- 86% line coverage via `cargo llvm-cov` — see [`scripts/coverage.sh`](./scripts/coverage.sh)
+- Subscriptions wired through the runtime: `Session::subscribe(filter)`
+  returns a `SubscriptionHandle` that yields live envelopes from any
+  session sharing the runtime; cross-connection delivery is verified.
+- Artifacts wired through the runtime: `Session::put_artifact` /
+  `fetch_artifact` / `release_artifact` round-trip end-to-end.
+- 134 tests, all five gates clean across feature-flag combinations
+- 85% line coverage via `cargo llvm-cov` — see [`scripts/coverage.sh`](./scripts/coverage.sh)
 
 ## Quickstart
 

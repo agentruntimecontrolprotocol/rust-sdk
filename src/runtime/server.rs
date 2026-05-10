@@ -9,21 +9,26 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use super::artifact::ArtifactStore;
 use super::context::{HumanResponse, ToolContext};
 use super::job::{JobEntry, JobRegistry};
 use super::session::{HandshakePhase, SessionState};
+use super::subscription::SubscriptionManager;
 use super::tools::ToolRegistry;
 use crate::auth::{AuthOutcome, AuthRegistry, Authenticator};
 use crate::envelope::Envelope;
 use crate::error::{ARCPError, ErrorCode};
 use crate::extensions::ExtensionRegistry;
+use crate::ids::SubscriptionId;
 use crate::ids::{JobId, MessageId, SessionId};
 use crate::messages::{
+    ArtifactFetchPayload, ArtifactPutPayload, ArtifactRefPayload, ArtifactReleasePayload,
     CancelPayload, CancelTargetKind, Capabilities, HumanChoiceResponsePayload,
     HumanInputCancelledPayload, HumanInputResponsePayload, JobAcceptedPayload, JobCancelledPayload,
-    JobCompletedPayload, JobFailedPayload, JobStartedPayload, JobState, MessageType,
+    JobCompletedPayload, JobFailedPayload, JobStartedPayload, JobState, MessageType, NackPayload,
     RuntimeIdentity, SessionAcceptedPayload, SessionLease, SessionOpenPayload,
-    SessionRejectedPayload, SessionUnauthenticatedPayload, ToolInvokePayload,
+    SessionRejectedPayload, SessionUnauthenticatedPayload, SubscribeAcceptedPayload,
+    SubscribeEventPayload, SubscribePayload, ToolInvokePayload, UnsubscribePayload,
 };
 use crate::store::eventlog::EventLog;
 use crate::transport::Transport;
@@ -126,6 +131,8 @@ impl RuntimeBuilder {
                 session_lease_seconds: self.session_lease_seconds,
                 extension_registry: ExtensionRegistry::new(),
                 event_log,
+                artifacts: ArtifactStore::new(),
+                subscriptions: SubscriptionManager::new(),
             }),
         })
     }
@@ -140,6 +147,8 @@ struct RuntimeInner {
     #[allow(dead_code)]
     extension_registry: ExtensionRegistry,
     event_log: EventLog,
+    artifacts: ArtifactStore,
+    subscriptions: SubscriptionManager,
 }
 
 /// The ARCP runtime. Cheap to clone; share across tasks.
@@ -165,6 +174,18 @@ impl ARCPRuntime {
     #[must_use]
     pub fn event_log(&self) -> &EventLog {
         &self.inner.event_log
+    }
+
+    /// Borrow the runtime's artifact store.
+    #[must_use]
+    pub fn artifacts(&self) -> &ArtifactStore {
+        &self.inner.artifacts
+    }
+
+    /// Borrow the runtime's subscription manager.
+    #[must_use]
+    pub fn subscriptions(&self) -> &SubscriptionManager {
+        &self.inner.subscriptions
     }
 
     /// Spawn a per-connection task that drives the handshake and then
@@ -199,10 +220,19 @@ impl ARCPRuntime {
         let (out_tx, mut out_rx) = mpsc::channel::<Envelope>(256);
         let writer_transport = Arc::clone(&transport);
         let event_log = self.inner.event_log.clone();
+        let writer_subs = self.inner.subscriptions.clone();
         let writer = tokio::spawn(async move {
             while let Some(env) = out_rx.recv().await {
                 if let Err(e) = event_log.append(&env).await {
                     tracing::warn!(error = %e, "failed to persist outbound envelope");
+                }
+                // Publish outbound envelopes too so subscribers see
+                // job.* / tool.* / stream.* events that originate on the
+                // server side (RFC §13). Skip subscribe.event itself so
+                // the wrapper isn't re-broadcast, which would cause an
+                // echo storm whenever a filter matches subscribe.event.
+                if !matches!(env.payload, MessageType::SubscribeEvent(_)) {
+                    let _ = writer_subs.publish(&env);
                 }
                 if let Err(e) = writer_transport.send(env).await {
                     tracing::warn!(error = %e, "transport send failed; closing writer");
@@ -214,6 +244,10 @@ impl ARCPRuntime {
         let connection_token = CancellationToken::new();
         let jobs = JobRegistry::new();
         let pending_human: Arc<DashMap<MessageId, oneshot::Sender<HumanResponse>>> =
+            Arc::new(DashMap::new());
+        // Subscriptions owned by this connection, so we can drop them on
+        // close even if the SubscriptionManager is shared across sessions.
+        let connection_subs: Arc<DashMap<SubscriptionId, JoinHandle<()>>> =
             Arc::new(DashMap::new());
         let mut state: Option<SessionState> = None;
         let mut seen_ids: HashSet<MessageId> = HashSet::new();
@@ -231,6 +265,8 @@ impl ARCPRuntime {
 
             // Persist incoming envelope.
             self.inner.event_log.append(&envelope).await?;
+            // Publish to subscribers (lossy on backpressure).
+            let _ = self.inner.subscriptions.publish(&envelope);
 
             let in_handshake = state.as_ref().is_none_or(|s| !s.is_accepted());
             if in_handshake && !envelope.payload.is_handshake() {
@@ -316,6 +352,52 @@ impl ARCPRuntime {
                     }
                     let _ = out_tx.send(env).await;
                 }
+                MessageType::Subscribe(payload) => {
+                    if let Some(s) = state.as_ref() {
+                        Self::handle_subscribe(
+                            &out_tx,
+                            &self.inner.subscriptions,
+                            &connection_subs,
+                            envelope.id.clone(),
+                            s.session_id.clone(),
+                            payload,
+                        )
+                        .await;
+                    }
+                }
+                MessageType::Unsubscribe(UnsubscribePayload { subscription_id }) => {
+                    if let Some((_, join)) = connection_subs.remove(&subscription_id) {
+                        join.abort();
+                    }
+                    let _ = self.inner.subscriptions.unsubscribe(&subscription_id);
+                }
+                MessageType::ArtifactPut(payload) => {
+                    if let Some(s) = state.as_ref() {
+                        Self::handle_artifact_put(
+                            &out_tx,
+                            &self.inner.artifacts,
+                            envelope.id.clone(),
+                            s.session_id.clone(),
+                            payload,
+                        )
+                        .await;
+                    }
+                }
+                MessageType::ArtifactFetch(payload) => {
+                    if let Some(s) = state.as_ref() {
+                        Self::handle_artifact_fetch(
+                            &out_tx,
+                            &self.inner.artifacts,
+                            envelope.id.clone(),
+                            s.session_id.clone(),
+                            payload,
+                        )
+                        .await;
+                    }
+                }
+                MessageType::ArtifactRelease(ArtifactReleasePayload { artifact_id }) => {
+                    self.inner.artifacts.release(&artifact_id);
+                }
                 _ if in_handshake => {
                     tracing::warn!(
                         type_name = envelope.payload.type_name(),
@@ -331,12 +413,17 @@ impl ARCPRuntime {
             }
         };
 
-        // Tear down: cancel all jobs, drop the out_tx so the writer drains
-        // remaining envelopes, then await the writer.
+        // Tear down: cancel all jobs, abort all subscription forwarder
+        // tasks, drop the out_tx so the writer drains remaining envelopes,
+        // then await the writer.
         connection_token.cancel();
         for r in jobs.inner_iter() {
             r.cancel();
         }
+        for entry in connection_subs.iter() {
+            entry.value().abort();
+        }
+        connection_subs.clear();
         drop(out_tx);
         let _ = writer.await;
         result
@@ -662,6 +749,109 @@ impl ARCPRuntime {
             message,
         }));
         env.correlation_id = Some(correlation_id);
+        let _ = out.send(env).await;
+    }
+
+    async fn handle_subscribe(
+        out: &mpsc::Sender<Envelope>,
+        manager: &SubscriptionManager,
+        connection_subs: &Arc<DashMap<SubscriptionId, JoinHandle<()>>>,
+        correlation_id: MessageId,
+        session_id: SessionId,
+        payload: SubscribePayload,
+    ) {
+        let SubscribePayload { filter, since: _ } = payload;
+        // PLAN.md §A4.10 reserves richer authorisation; for v0.1 we accept
+        // any filter from an authenticated session.
+        let (subscription_id, mut rx) = manager.register(filter, session_id.clone());
+        // Acknowledge the subscription.
+        let mut accepted =
+            Envelope::new(MessageType::SubscribeAccepted(SubscribeAcceptedPayload {
+                subscription_id: subscription_id.clone(),
+            }));
+        accepted.correlation_id = Some(correlation_id);
+        accepted.session_id = Some(session_id);
+        accepted.subscription_id = Some(subscription_id.clone());
+        let _ = out.send(accepted).await;
+
+        // Spawn a forwarder task that wraps each delivered envelope in a
+        // subscribe.event and pushes to the outbound channel. Backfill
+        // (the §13.3 boundary marker) is left for a follow-up.
+        let out_clone = out.clone();
+        let sub_id = subscription_id.clone();
+        let join = tokio::spawn(async move {
+            while let Some(event) = rx.next().await {
+                let value = match serde_json::to_value(&event) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "subscribe.event serialise failed");
+                        continue;
+                    }
+                };
+                let mut wrapper =
+                    Envelope::new(MessageType::SubscribeEvent(SubscribeEventPayload {
+                        event: value,
+                    }));
+                wrapper.subscription_id = Some(sub_id.clone());
+                if out_clone.send(wrapper).await.is_err() {
+                    break;
+                }
+            }
+        });
+        connection_subs.insert(subscription_id, join);
+    }
+
+    async fn handle_artifact_put(
+        out: &mpsc::Sender<Envelope>,
+        store: &ArtifactStore,
+        correlation_id: MessageId,
+        session_id: SessionId,
+        payload: ArtifactPutPayload,
+    ) {
+        let ArtifactPutPayload {
+            media_type,
+            data,
+            sha256,
+            retain_seconds,
+        } = payload;
+        let mut env = match store.put(media_type, &data, retain_seconds, sha256) {
+            Ok(reference) => Envelope::new(MessageType::ArtifactRef(ArtifactRefPayload {
+                artifact: reference,
+            })),
+            Err(e) => Envelope::new(MessageType::Nack(NackPayload {
+                code: e.code(),
+                message: e.to_string(),
+                details: None,
+            })),
+        };
+        env.correlation_id = Some(correlation_id);
+        env.session_id = Some(session_id);
+        let _ = out.send(env).await;
+    }
+
+    async fn handle_artifact_fetch(
+        out: &mpsc::Sender<Envelope>,
+        store: &ArtifactStore,
+        correlation_id: MessageId,
+        session_id: SessionId,
+        payload: ArtifactFetchPayload,
+    ) {
+        let ArtifactFetchPayload { artifact_id } = payload;
+        let mut env = match store.fetch(&artifact_id) {
+            Ok((data, media_type)) => Envelope::new(MessageType::ArtifactPut(ArtifactPutPayload {
+                media_type,
+                data,
+                sha256: None,
+                retain_seconds: None,
+            })),
+            Err(e) => Envelope::new(MessageType::Nack(NackPayload {
+                code: e.code(),
+                message: e.to_string(),
+                details: None,
+            })),
+        };
+        env.correlation_id = Some(correlation_id);
+        env.session_id = Some(session_id);
         let _ = out.send(env).await;
     }
 }

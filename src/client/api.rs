@@ -5,16 +5,18 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::client::handlers::{HumanInputHandler, NoopHumanInputHandler};
 use crate::envelope::Envelope;
 use crate::error::{ARCPError, ErrorCode};
-use crate::ids::{JobId, MessageId, SessionId};
+use crate::ids::{ArtifactId, JobId, MessageId, SessionId, SubscriptionId};
 use crate::messages::{
-    CancelPayload, CancelTargetKind, Capabilities, ClientIdentity, Credentials,
-    HumanChoiceResponsePayload, HumanInputResponsePayload, JobAcceptedPayload, JobCompletedPayload,
-    JobFailedPayload, MessageType, SessionAcceptedPayload, SessionOpenPayload, ToolInvokePayload,
+    ArtifactFetchPayload, ArtifactPutPayload, ArtifactRef, ArtifactReleasePayload, CancelPayload,
+    CancelTargetKind, Capabilities, ClientIdentity, Credentials, HumanChoiceResponsePayload,
+    HumanInputResponsePayload, JobAcceptedPayload, JobCompletedPayload, JobFailedPayload,
+    MessageType, NackPayload, SessionAcceptedPayload, SessionOpenPayload, SubscribePayload,
+    SubscriptionFilter, SubscriptionSince, ToolInvokePayload, UnsubscribePayload,
 };
 use crate::transport::Transport;
 
@@ -52,6 +54,14 @@ struct SessionInner<T: Transport + 'static> {
     pending_jobs: DashMap<MessageId, JobNotifier>,
     /// invoke→accepted: `correlation_id` → oneshot for the `job_id`.
     pending_accepted: DashMap<MessageId, oneshot::Sender<JobId>>,
+    /// Pending artifact responses (put → `ArtifactRef`, fetch → bytes).
+    pending_artifact: DashMap<MessageId, oneshot::Sender<ArtifactReply>>,
+    /// Active subscriptions: `subscription_id` → forwarder channel.
+    /// Wrapped in `Arc` so [`SubscriptionHandle`]'s Drop can drop only
+    /// its own slot without holding a reference to the whole inner.
+    active_subscriptions: Arc<DashMap<SubscriptionId, mpsc::UnboundedSender<Envelope>>>,
+    /// `correlation_id` for `subscribe` → `oneshot` for `subscribe.accepted`.
+    pending_subscribe: DashMap<MessageId, oneshot::Sender<SubscriptionId>>,
     reader: Mutex<Option<tokio::task::JoinHandle<()>>>,
     human_handler: Arc<dyn HumanInputHandler>,
     _transport_kind: PhantomData<T>,
@@ -71,6 +81,18 @@ impl JobNotifier {
             Self::Taken => None,
         }
     }
+}
+
+/// Reply variants the runtime can send for an artifact request.
+#[derive(Debug)]
+enum ArtifactReply {
+    /// `artifact.put` succeeded; carries the canonical reference.
+    Ref(ArtifactRef),
+    /// `artifact.fetch` succeeded; carries the inline base64 body and
+    /// media type.
+    Inline { data: String, media_type: String },
+    /// Runtime returned a `nack` (`NOT_FOUND`, `INVALID_ARGUMENT`, etc.).
+    Nack(NackPayload),
 }
 
 impl<S: sealed::State, T: Transport + 'static> std::fmt::Debug for Session<S, T> {
@@ -157,6 +179,7 @@ impl<T: Transport + 'static> Session<Unauthenticated, T> {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // Long match block; splitting it adds nothing.
     async fn reader_loop(inner: Arc<SessionInner<T>>) {
         while let Ok(Some(env)) = inner.transport.recv().await {
             // Human-input requests don't carry a correlation_id matching a
@@ -205,6 +228,21 @@ impl<T: Transport + 'static> Session<Unauthenticated, T> {
                 _ => {}
             }
 
+            // Subscription delivery doesn't need a correlation_id; route
+            // by subscription_id from the envelope metadata.
+            if let MessageType::SubscribeEvent(p) = &env.payload {
+                if let Some(sub_id) = env.subscription_id.as_ref() {
+                    if let Some(forwarder) = inner.active_subscriptions.get(sub_id) {
+                        // The wrapped event is a JSON value; deserialise to
+                        // an Envelope so the subscriber gets typed access.
+                        if let Ok(inner_env) = serde_json::from_value::<Envelope>(p.event.clone()) {
+                            let _ = forwarder.send(inner_env);
+                        }
+                    }
+                }
+                continue;
+            }
+
             let Some(corr) = env.correlation_id.clone() else {
                 continue;
             };
@@ -236,6 +274,29 @@ impl<T: Transport + 'static> Session<Unauthenticated, T> {
                             let reason = p.reason.unwrap_or_default();
                             let _ = tx.send(Err(ARCPError::Cancelled { reason }));
                         }
+                    }
+                }
+                MessageType::ArtifactRef(crate::messages::ArtifactRefPayload { artifact }) => {
+                    if let Some((_, tx)) = inner.pending_artifact.remove(&corr) {
+                        let _ = tx.send(ArtifactReply::Ref(artifact));
+                    }
+                }
+                MessageType::ArtifactPut(ArtifactPutPayload {
+                    media_type, data, ..
+                }) => {
+                    if let Some((_, tx)) = inner.pending_artifact.remove(&corr) {
+                        let _ = tx.send(ArtifactReply::Inline { data, media_type });
+                    }
+                }
+                MessageType::Nack(payload) => {
+                    // A nack might resolve a pending artifact request.
+                    if let Some((_, tx)) = inner.pending_artifact.remove(&corr) {
+                        let _ = tx.send(ArtifactReply::Nack(payload));
+                    }
+                }
+                MessageType::SubscribeAccepted(p) => {
+                    if let Some((_, tx)) = inner.pending_subscribe.remove(&corr) {
+                        let _ = tx.send(p.subscription_id);
                     }
                 }
                 _ => { /* ignore intermediate events for now */ }
@@ -322,6 +383,206 @@ impl<T: Transport + 'static> Session<Authenticated, T> {
             transport: Arc::clone(&self.inner.transport),
             session_id: self.id().await?,
         })
+    }
+
+    /// Upload an artifact (RFC §16.2). Returns the canonical
+    /// [`ArtifactRef`] the runtime minted.
+    ///
+    /// `data` must be base64-encoded; the caller is responsible for
+    /// chunking inputs that exceed the runtime's inline cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ARCPError`] for transport failures, or whatever code the
+    /// runtime returns in a `nack` (e.g. [`ErrorCode::InvalidArgument`]
+    /// for malformed base64).
+    pub async fn put_artifact(
+        &self,
+        media_type: impl Into<String>,
+        data: impl Into<String>,
+        retain_seconds: Option<u64>,
+    ) -> Result<ArtifactRef, ARCPError> {
+        let session_id = self.id().await?;
+        let mut env = Envelope::new(MessageType::ArtifactPut(ArtifactPutPayload {
+            media_type: media_type.into(),
+            data: data.into(),
+            sha256: None,
+            retain_seconds,
+        }));
+        env.session_id = Some(session_id);
+        let correlation_id = env.id.clone();
+
+        let (tx, rx) = oneshot::channel::<ArtifactReply>();
+        self.inner.pending_artifact.insert(correlation_id, tx);
+        self.inner.transport.send(env).await?;
+
+        match rx.await {
+            Ok(ArtifactReply::Ref(reference)) => Ok(reference),
+            Ok(ArtifactReply::Inline { .. }) => Err(ARCPError::Internal {
+                detail: "expected artifact.ref, got inline body".into(),
+            }),
+            Ok(ArtifactReply::Nack(p)) => Err(map_nack(p)),
+            Err(_) => Err(ARCPError::Unavailable {
+                detail: "artifact.put response channel dropped".into(),
+            }),
+        }
+    }
+
+    /// Fetch an artifact by id. Returns `(base64_body, media_type)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ARCPError::NotFound`] when the runtime has no such id;
+    /// [`ARCPError::Unavailable`] for transport failures.
+    pub async fn fetch_artifact(
+        &self,
+        artifact_id: ArtifactId,
+    ) -> Result<(String, String), ARCPError> {
+        let session_id = self.id().await?;
+        let mut env = Envelope::new(MessageType::ArtifactFetch(ArtifactFetchPayload {
+            artifact_id,
+        }));
+        env.session_id = Some(session_id);
+        let correlation_id = env.id.clone();
+
+        let (tx, rx) = oneshot::channel::<ArtifactReply>();
+        self.inner.pending_artifact.insert(correlation_id, tx);
+        self.inner.transport.send(env).await?;
+
+        match rx.await {
+            Ok(ArtifactReply::Inline { data, media_type }) => Ok((data, media_type)),
+            Ok(ArtifactReply::Ref(_)) => Err(ARCPError::Internal {
+                detail: "expected inline body, got artifact.ref".into(),
+            }),
+            Ok(ArtifactReply::Nack(p)) => Err(map_nack(p)),
+            Err(_) => Err(ARCPError::Unavailable {
+                detail: "artifact.fetch response channel dropped".into(),
+            }),
+        }
+    }
+
+    /// Release (delete) an artifact (RFC §16.2). The runtime does not
+    /// acknowledge releases; this is fire-and-forget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ARCPError::Unavailable`] for transport failures.
+    pub async fn release_artifact(&self, artifact_id: ArtifactId) -> Result<(), ARCPError> {
+        let session_id = self.id().await?;
+        let mut env = Envelope::new(MessageType::ArtifactRelease(ArtifactReleasePayload {
+            artifact_id,
+        }));
+        env.session_id = Some(session_id);
+        self.inner.transport.send(env).await
+    }
+
+    /// Subscribe to runtime events (RFC §13). Returns a
+    /// [`SubscriptionHandle`] yielding live envelopes that match `filter`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ARCPError::Unavailable`] if the transport closes before
+    /// the runtime acknowledges the subscription.
+    pub async fn subscribe(
+        &self,
+        filter: SubscriptionFilter,
+    ) -> Result<SubscriptionHandle, ARCPError> {
+        let session_id = self.id().await?;
+        let mut env = Envelope::new(MessageType::Subscribe(SubscribePayload {
+            filter,
+            since: None,
+        }));
+        env.session_id = Some(session_id.clone());
+        let correlation_id = env.id.clone();
+
+        let (acc_tx, acc_rx) = oneshot::channel::<SubscriptionId>();
+        self.inner.pending_subscribe.insert(correlation_id, acc_tx);
+        self.inner.transport.send(env).await?;
+
+        let subscription_id = acc_rx.await.map_err(|_| ARCPError::Unavailable {
+            detail: "runtime closed before subscribe.accepted".into(),
+        })?;
+
+        let (fwd_tx, fwd_rx) = mpsc::unbounded_channel::<Envelope>();
+        self.inner
+            .active_subscriptions
+            .insert(subscription_id.clone(), fwd_tx);
+        Ok(SubscriptionHandle {
+            subscription_id,
+            session_id,
+            transport: Arc::clone(&self.inner.transport),
+            inbox: Mutex::new(fwd_rx),
+            forwarders: Arc::clone(&self.inner.active_subscriptions),
+        })
+    }
+}
+
+/// Handle to a live subscription (RFC §13).
+///
+/// Drop the handle to tear down the subscription server-side; alternatively
+/// call [`Self::unsubscribe`] for an explicit graceful shutdown.
+pub struct SubscriptionHandle {
+    /// The subscription's id.
+    pub subscription_id: SubscriptionId,
+    session_id: SessionId,
+    transport: Arc<dyn Transport>,
+    inbox: Mutex<mpsc::UnboundedReceiver<Envelope>>,
+    forwarders: Arc<DashMap<SubscriptionId, mpsc::UnboundedSender<Envelope>>>,
+}
+
+impl std::fmt::Debug for SubscriptionHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubscriptionHandle")
+            .field("subscription_id", &self.subscription_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SubscriptionHandle {
+    /// Receive the next envelope, or `None` when the subscription is
+    /// torn down.
+    pub async fn next(&self) -> Option<Envelope> {
+        self.inbox.lock().await.recv().await
+    }
+
+    /// Send an `unsubscribe` envelope and detach locally. The handle is
+    /// also detached on Drop, but explicit `unsubscribe` is the polite
+    /// shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ARCPError::Unavailable`] if the transport is already
+    /// closed.
+    pub async fn unsubscribe(self) -> Result<(), ARCPError> {
+        let mut env = Envelope::new(MessageType::Unsubscribe(UnsubscribePayload {
+            subscription_id: self.subscription_id.clone(),
+        }));
+        env.session_id = Some(self.session_id.clone());
+        let result = self.transport.send(env).await;
+        // Drop will run after this returns and remove the forwarder slot.
+        result
+    }
+}
+
+impl Drop for SubscriptionHandle {
+    fn drop(&mut self) {
+        self.forwarders.remove(&self.subscription_id);
+    }
+}
+
+#[allow(dead_code)] // SubscriptionSince is wired through Phase 5 follow-up.
+fn _since_marker(_x: SubscriptionSince) {}
+
+fn map_nack(p: NackPayload) -> ARCPError {
+    match p.code {
+        ErrorCode::NotFound => ARCPError::NotFound {
+            kind: "artifact",
+            id: p.message,
+        },
+        ErrorCode::InvalidArgument => ARCPError::InvalidArgument { detail: p.message },
+        other => ARCPError::Unknown {
+            detail: format!("nack ({other}): {}", p.message),
+        },
     }
 }
 
@@ -441,6 +702,9 @@ impl<T: Transport + 'static> ARCPClient<T> {
                 capabilities: Mutex::new(Capabilities::default()),
                 pending_jobs: DashMap::new(),
                 pending_accepted: DashMap::new(),
+                pending_artifact: DashMap::new(),
+                active_subscriptions: Arc::new(DashMap::new()),
+                pending_subscribe: DashMap::new(),
                 reader: Mutex::new(None),
                 human_handler: Arc::clone(&self.human_handler),
                 _transport_kind: PhantomData,
