@@ -1,0 +1,7 @@
+edition = "2021"
+max_width = 100
+newline_style = "Unix"
+use_field_init_shorthand = true
+# Note: `imports_granularity = "Module"` and `group_imports = "StdExternalCrate"`
+# from the build prompt are nightly-only rustfmt features. They are intentionally
+# omitted on stable; revisit when the project pins a nightly toolchain.
