@@ -42,10 +42,10 @@ Legend: ✅ implemented · 🟡 partial · ⏳ deferred to v0.2 · ➖ not appli
 | 12.3 | Provenance / multi-channel (first-wins) | 🟡 (single-channel only; fan-out deferred) |
 | 12.3 | Provenance / multi-channel (quorum) | ⏳ v0.2 |
 | 12.4 | Expiration with default fallback   | ⏳ (payload typed; runtime expiry sweep deferred) |
-| 13.1 | Subscribe                          | ⏳ |
-| 13.2 | Filtering                          | ⏳ |
-| 13.3 | Backfill                           | ⏳ |
-| 13.4 | Termination                        | ⏳ |
+| 13.1 | Subscribe                          | 🟡 (`SubscriptionManager` works locally; runtime dispatch wiring deferred) |
+| 13.2 | Filtering                          | ✅ (session/trace/job/stream/types/min_priority) |
+| 13.3 | Backfill                           | 🟡 (event log replay primitive in place; live-tail handoff deferred) |
+| 13.4 | Termination                        | ✅ (`unsubscribe`, `drop_session`) |
 | 14   | Multi-Agent Coordination           | ⏳ v0.2 |
 | 15.1 | Permission Model                   | ⏳ |
 | 15.2 | Sandboxing                         | ➖ (runtime concern) |
@@ -53,9 +53,9 @@ Legend: ✅ implemented · 🟡 partial · ⏳ deferred to v0.2 · ➖ not appli
 | 15.4 | Permission Challenge Flow          | ⏳ |
 | 15.5 | Lease Lifecycle                    | ⏳ |
 | 15.6 | Trust Elevation                    | ⏳ v0.2 |
-| 16.1 | Artifact References                | ⏳ |
-| 16.2 | Storage & Retrieval (inline base64)| ⏳ |
-| 16.3 | Lifecycle / retention sweep        | ⏳ |
+| 16.1 | Artifact References                | ✅ |
+| 16.2 | Storage & Retrieval (inline base64)| 🟡 (in-memory store ready; runtime envelope dispatch deferred) |
+| 16.3 | Lifecycle / retention sweep        | ✅ (`ArtifactStore::sweep_expired`) |
 | 17.1 | Tracing (`tracing` crate)          | ⏳ |
 | 17.2 | Structured Logs                    | ⏳ |
 | 17.3 | Metrics + standard names           | ⏳ |
