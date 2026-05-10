@@ -13,18 +13,18 @@ Legend: ✅ implemented · 🟡 partial · ⏳ deferred to v0.2 · ➖ not appli
 | 4    | Design Principles                  | ⏳ |
 | 5    | Architecture                       | ⏳ |
 | 6.1  | Envelope                           | ✅ |
-| 6.2  | Message Types                      | 🟡 (skeleton: ping/pong/event.emit/log/metric; rest in Phase 2) |
-| 6.3  | Command/Result/Event Flow          | ⏳ |
+| 6.2  | Message Types                      | ✅ (all in-scope variants typed; agent/workflow stubs return `UNIMPLEMENTED`) |
+| 6.3  | Command/Result/Event Flow          | 🟡 (handshake wired; job/stream/etc. dispatch in Phase 3+) |
 | 6.4  | Delivery Semantics                 | 🟡 (event log idempotency by `(session_id, id)`; logical idempotency table reserved) |
 | 6.5  | Priority & QoS                     | 🟡 (priority field round-trips; scheduling/shedding in later phases) |
-| 7    | Capability Negotiation             | ⏳ |
-| 8.1  | Session Establishment              | ⏳ |
-| 8.2  | Credentials (`bearer`,`signed_jwt`,`none`) | ⏳ |
+| 7    | Capability Negotiation             | ✅ (intersection on `session.accepted`; required-but-unsupported reserved for Phase 3) |
+| 8.1  | Session Establishment              | ✅ (four-step handshake; non-handshake messages dropped pre-acceptance) |
+| 8.2  | Credentials (`bearer`,`signed_jwt`,`none`) | ✅ |
 | 8.2  | Credentials (`mtls`,`oauth2`)      | ⏳ v0.2 |
-| 8.3  | Runtime Identity                   | ⏳ |
-| 8.4  | Re-authentication                  | ⏳ |
-| 8.5  | Eviction                           | ⏳ |
-| 9    | Sessions (stateless, stateful)     | ⏳ |
+| 8.3  | Runtime Identity                   | ✅ |
+| 8.4  | Re-authentication                  | 🟡 (challenge / `session.refresh` shape in place; runtime trigger in Phase 3+) |
+| 8.5  | Eviction                           | 🟡 (payload typed; runtime triggering in Phase 3+) |
+| 9    | Sessions (stateless, stateful)     | 🟡 (per-session `SessionState` tracked in runtime; resume in Phase 5) |
 | 9    | Sessions (durable across reconnect)| ⏳ v0.2 |
 | 10.1 | Durable Jobs                       | ⏳ |
 | 10.2 | Job States                         | ⏳ |

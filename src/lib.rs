@@ -31,17 +31,23 @@
 #![deny(missing_docs)]
 #![warn(unreachable_pub)]
 
+pub mod auth;
+pub mod client;
 pub mod envelope;
 pub mod error;
 pub mod extensions;
 pub mod ids;
 pub mod messages;
+pub mod runtime;
 pub mod store;
+pub mod transport;
 
+pub use client::ARCPClient;
 pub use envelope::{Envelope, Priority, RawEnvelope};
 pub use error::{ARCPError, ErrorCode};
 pub use extensions::{ExtensionRegistry, TypeClassification};
-pub use messages::MessageType;
+pub use messages::{Capabilities, MessageType};
+pub use runtime::ARCPRuntime;
 
 /// Protocol version implemented by this crate, as carried in the `arcp` field
 /// of every envelope (RFC §6.1).
