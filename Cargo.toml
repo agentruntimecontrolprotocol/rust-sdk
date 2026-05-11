@@ -64,6 +64,51 @@ pretty_assertions = "1"
 tempfile = "3"
 insta = { version = "1", features = ["json"] }
 
+# Multi-file examples — single-file ones are picked up automatically by Cargo.
+[[example]]
+name = "subscriptions"
+path = "examples/subscriptions/main.rs"
+
+[[example]]
+name = "leases"
+path = "examples/leases/main.rs"
+
+[[example]]
+name = "lease_revocation"
+path = "examples/lease_revocation/main.rs"
+
+[[example]]
+name = "permission_challenge"
+path = "examples/permission_challenge/main.rs"
+
+[[example]]
+name = "delegation"
+path = "examples/delegation/main.rs"
+
+[[example]]
+name = "handoff"
+path = "examples/handoff/main.rs"
+
+[[example]]
+name = "heartbeats"
+path = "examples/heartbeats/main.rs"
+
+[[example]]
+name = "resumability"
+path = "examples/resumability/main.rs"
+
+[[example]]
+name = "reasoning_streams"
+path = "examples/reasoning_streams/main.rs"
+
+[[example]]
+name = "human_input"
+path = "examples/human_input/main.rs"
+
+[[example]]
+name = "mcp"
+path = "examples/mcp/main.rs"
+
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "deny"
