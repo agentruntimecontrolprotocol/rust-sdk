@@ -2,7 +2,7 @@
 name = "arcp"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 description = "Reference implementation of the Agent Runtime Control Protocol (ARCP) v1.0"
 repository = "https://github.com/nficano/arpc"
