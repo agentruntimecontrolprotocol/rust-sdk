@@ -40,8 +40,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # MSRV is read from `Cargo.toml` (`rust-version = "1.83"`). Keep in sync.
-        rust: ["1.83", "stable"]
+        # MSRV is read from `Cargo.toml` (`rust-version = "1.85"`). Keep in sync.
+        rust: ["1.85", "stable"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
