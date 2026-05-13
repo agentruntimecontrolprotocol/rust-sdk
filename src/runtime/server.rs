@@ -208,7 +208,7 @@ impl ARCPRuntime {
     ///
     /// Returns [`ARCPError`] for transport / serialisation failures or for
     /// internal protocol errors (rare).
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     pub async fn run_connection<T: Transport + 'static>(
         &self,
         transport: T,
