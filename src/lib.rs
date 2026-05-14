@@ -24,7 +24,7 @@
 //! phases populate the runtime, client, transports, and CLI as described
 //! in [`PLAN.md`][plan].
 //!
-//! [rfc]: https://github.com/nficano/arpc/blob/main/agent-runtime-control-protocol/docs/RFC%200001%20%20v2%20%E2%80%94%20Agent%20Runtime%20Control%20Protocol.md
+//! [rfc]: https://github.com/nficano/arpc/blob/main/agent-runtime-control-protocol/docs/draft-arcp-01.md
 //! [plan]: https://github.com/nficano/arpc/blob/main/rust-sdk/PLAN.md
 
 #![deny(unsafe_code)]
