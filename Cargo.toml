@@ -6,9 +6,21 @@ rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 description = "Reference implementation of the Agent Runtime Control Protocol (ARCP) v1.0"
 repository = "https://github.com/nficano/arpc"
+homepage = "https://github.com/nficano/arpc"
+documentation = "https://docs.rs/arcp"
+authors = ["Nick Ficano <nficano@gmail.com>"]
 keywords = ["arcp", "agent", "protocol", "runtime", "rfc"]
 categories = ["network-programming", "asynchronous", "api-bindings"]
 readme = "README.md"
+include = [
+    "src/**/*",
+    "examples/**/*",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "CHANGELOG.md",
+]
 
 [lib]
 name = "arcp"
