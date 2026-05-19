@@ -12,7 +12,10 @@ use tokio_util::sync::CancellationToken;
 use crate::envelope::Envelope;
 use crate::error::{ARCPError, ErrorCode};
 use crate::ids::{JobId, MessageId, SessionId};
-use crate::messages::{HumanChoiceRequestPayload, HumanInputRequestPayload, MessageType};
+use crate::messages::{
+    HumanChoiceRequestPayload, HumanInputRequestPayload, JobResultChunkPayload, MessageType,
+    ResultChunkEncoding,
+};
 
 /// Per-job dispatch context.
 pub struct ToolContext {
@@ -128,6 +131,43 @@ impl ToolContext {
     #[must_use]
     pub const fn job_id(&self) -> &JobId {
         &self.job_id
+    }
+
+    /// Emit one `job.result_chunk` fragment (ARCP v1.1 §8.4).
+    ///
+    /// `chunk_seq` is the caller's responsibility — start at 0 and
+    /// increment per chunk for the same `result_id`. The terminal chunk
+    /// MUST set `more: false`; the job's terminal `job.completed`
+    /// SHOULD then carry the same `result_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ARCPError::Unavailable`] if the outbound channel is
+    /// closed.
+    pub async fn emit_result_chunk(
+        &self,
+        result_id: impl Into<String>,
+        chunk_seq: u64,
+        data: impl Into<String>,
+        encoding: ResultChunkEncoding,
+        more: bool,
+    ) -> Result<(), ARCPError> {
+        let mut env = Envelope::new(MessageType::JobResultChunk(JobResultChunkPayload {
+            result_id: result_id.into(),
+            chunk_seq,
+            data: data.into(),
+            encoding,
+            more,
+        }));
+        env.session_id = Some(self.session_id.clone());
+        env.job_id = Some(self.job_id.clone());
+        env.correlation_id = Some(self.correlation_id.clone());
+        self.out
+            .send(env)
+            .await
+            .map_err(|_| ARCPError::Unavailable {
+                detail: "outbound channel closed".into(),
+            })
     }
 }
 

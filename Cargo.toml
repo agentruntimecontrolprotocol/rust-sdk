@@ -142,6 +142,10 @@ path = "examples/agent_versions/main.rs"
 name = "job_subscribe"
 path = "examples/job_subscribe/main.rs"
 
+[[example]]
+name = "result_chunk"
+path = "examples/result_chunk/main.rs"
+
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "deny"

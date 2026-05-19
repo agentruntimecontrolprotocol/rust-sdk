@@ -36,7 +36,8 @@ pub use control::{
 pub use execution::{
     AgentDelegatePayload, AgentHandoffPayload, AgentRef, AgentRefParseError, JobAcceptedPayload,
     JobCancelledPayload, JobCheckpointPayload, JobCompletedPayload, JobFailedPayload,
-    JobHeartbeatPayload, JobProgressPayload, JobSchedulePayload, JobStartedPayload, JobState,
+    JobHeartbeatPayload, JobProgressPayload, JobResultChunkPayload, JobSchedulePayload,
+    JobStartedPayload, JobState, ResultChunkAssembler, ResultChunkEncoding, ResultChunkError,
     ToolErrorPayload, ToolInvokePayload, ToolResultPayload, WorkflowCompletePayload,
     WorkflowStartPayload,
 };
@@ -371,6 +372,11 @@ pub enum MessageType {
     /// `job.cancelled`
     #[serde(rename = "job.cancelled")]
     JobCancelled(JobCancelledPayload),
+    /// `job.result_chunk` (ARCP v1.1 §8.4) — one fragment of a streamed
+    /// final result. Terminated by `job.completed` carrying the same
+    /// `result_id`.
+    #[serde(rename = "job.result_chunk")]
+    JobResultChunk(JobResultChunkPayload),
 
     // Streaming
     /// `stream.open`
@@ -523,6 +529,7 @@ impl MessageType {
             Self::JobCompleted(_) => "job.completed",
             Self::JobFailed(_) => "job.failed",
             Self::JobCancelled(_) => "job.cancelled",
+            Self::JobResultChunk(_) => "job.result_chunk",
             Self::StreamOpen(_) => "stream.open",
             Self::StreamChunk(_) => "stream.chunk",
             Self::StreamClose(_) => "stream.close",
@@ -1186,8 +1193,21 @@ mod tests {
                 MessageType::JobCompleted(JobCompletedPayload {
                     value: None,
                     result_ref: None,
+                    result_id: None,
+                    result_size: None,
+                    summary: None,
                 }),
                 "job.completed",
+            ),
+            (
+                MessageType::JobResultChunk(JobResultChunkPayload {
+                    result_id: "r".into(),
+                    chunk_seq: 0,
+                    data: "x".into(),
+                    encoding: crate::messages::ResultChunkEncoding::Utf8,
+                    more: false,
+                }),
+                "job.result_chunk",
             ),
             (
                 MessageType::JobFailed(JobFailedPayload {
@@ -1459,8 +1479,8 @@ mod tests {
         for (msg, expected) in &cases {
             assert_eq!(msg.type_name(), *expected);
         }
-        // 66 message variants — sanity-check we built exactly that many.
+        // 67 message variants — sanity-check we built exactly that many.
         // Bump this when MessageType grows in v0.2.
-        assert_eq!(cases.len(), 66);
+        assert_eq!(cases.len(), 67);
     }
 }

@@ -808,10 +808,14 @@ impl ARCPRuntime {
             let terminal = match outcome {
                 Outcome::Completed(value) => {
                     jobs_clone.set_state(&job_id, JobState::Completed);
-                    MessageType::JobCompleted(JobCompletedPayload {
-                        value: Some(value),
-                        result_ref: None,
-                    })
+                    // Allow agents that stream results to indicate the
+                    // terminating job.completed should reference a
+                    // `result_id` (ARCP v1.1 §8.4) by returning the
+                    // sentinel shape `{ "$arcp_streamed_result": {
+                    // result_id, result_size?, summary? } }`. Everything
+                    // else flows through as `value` (the v1.0 path).
+                    let completed = streamed_result_from_value(value);
+                    MessageType::JobCompleted(completed)
                 }
                 Outcome::Failed(e) => {
                     jobs_clone.set_state(&job_id, JobState::Failed);
@@ -1167,10 +1171,55 @@ enum Outcome {
     Cancelled(String),
 }
 
+/// Sentinel key for streamed-result agents (ARCP v1.1 §8.4).
+///
+/// When an agent's returned value is a single-entry object keyed by this
+/// constant, the runtime promotes the payload (`result_id`,
+/// `result_size`, `summary`) onto the terminating `job.completed` rather
+/// than carrying the sentinel through as `value`.
+pub const STREAMED_RESULT_SENTINEL: &str = "$arcp_streamed_result";
+
+/// Build a [`JobCompletedPayload`] from a tool's returned value,
+/// recognising the streaming-result sentinel.
+fn streamed_result_from_value(value: serde_json::Value) -> JobCompletedPayload {
+    if let Some(obj) = value.as_object() {
+        if obj.len() == 1 {
+            if let Some(inner) = obj.get(STREAMED_RESULT_SENTINEL) {
+                let result_id = inner
+                    .get("result_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let result_size = inner.get("result_size").and_then(serde_json::Value::as_u64);
+                let summary = inner
+                    .get("summary")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                if result_id.is_some() {
+                    return JobCompletedPayload {
+                        value: None,
+                        result_ref: None,
+                        result_id,
+                        result_size,
+                        summary,
+                    };
+                }
+            }
+        }
+    }
+    JobCompletedPayload {
+        value: Some(value),
+        result_ref: None,
+        result_id: None,
+        result_size: None,
+        summary: None,
+    }
+}
+
 /// True when an envelope is a server-emitted job event suitable for
-/// `job.subscribe` forwarding (ARCP v1.1 §7.6). Filters out client-to-
-/// server commands that happen to carry `job_id` (e.g. `cancel`,
-/// `tool.invoke`).
+/// `job.subscribe` forwarding (ARCP v1.1 §7.6).
+///
+/// Filters out client-to-server commands that happen to carry `job_id`
+/// (e.g. `cancel`, `tool.invoke`).
 const fn is_forwardable_job_event(payload: &MessageType) -> bool {
     matches!(
         payload,
@@ -1181,6 +1230,7 @@ const fn is_forwardable_job_event(payload: &MessageType) -> bool {
             | MessageType::JobCompleted(_)
             | MessageType::JobFailed(_)
             | MessageType::JobCancelled(_)
+            | MessageType::JobResultChunk(_)
             | MessageType::ToolResult(_)
             | MessageType::ToolError(_)
             | MessageType::Log(_)
