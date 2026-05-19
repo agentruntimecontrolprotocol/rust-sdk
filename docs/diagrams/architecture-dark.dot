@@ -1,0 +1,54 @@
+// ARCP Rust SDK crate architecture (dark)
+digraph RustSdkArchitecture {
+  rankdir=TB; bgcolor="transparent"; compound=true; fontname="Helvetica";
+  splines=ortho; nodesep=0.32; ranksep=0.55; pad="0.35,0.25";
+
+  node [shape=box, style="rounded,filled", fillcolor="#334155", color="#475569",
+        fontname="Helvetica", fontsize=11, fontcolor="#F1F5F9",
+        margin="0.22,0.11", penwidth=1.0];
+  edge [fontname="Helvetica", fontsize=9, fontcolor="#94A3B8", color="#64748B",
+        penwidth=1.1, arrowsize=0.75, arrowhead=vee];
+
+  Client [
+    label=<<FONT POINT-SIZE="12"><B>arcp::client</B></FONT><BR/><FONT POINT-SIZE="9" COLOR="#CBD5E1">ARCPClient · Session&lt;S&gt;</FONT>>,
+    fillcolor="#3B82F6", color="#2563EB", fontcolor="white", penwidth=1.4
+  ];
+
+  Runtime [
+    label=<<FONT POINT-SIZE="12"><B>arcp::runtime</B></FONT><BR/><FONT POINT-SIZE="9" COLOR="white">server · jobs · leases · artifacts</FONT>>,
+    fillcolor="#F59E0B", color="#D97706", fontcolor="white", penwidth=1.4
+  ];
+
+  Messages [
+    label=<<FONT POINT-SIZE="11"><B>arcp::messages</B></FONT><BR/><FONT POINT-SIZE="9" COLOR="#94A3B8">tagged-enum MessageType</FONT>>
+  ];
+
+  subgraph cluster_transport {
+    label=<<TABLE BORDER="0" CELLBORDER="0" CELLPADDING="0" CELLSPACING="0"><TR><TD COLSPAN="3" HEIGHT="8"></TD></TR><TR><TD WIDTH="8"></TD><TD><FONT POINT-SIZE="12"><B>arcp::transport</B></FONT></TD><TD WIDTH="8"></TD></TR></TABLE>>;
+    style="rounded,filled";
+    fillcolor="#0F172A"; color="#334155";
+    fontname="Helvetica"; fontcolor="#94A3B8";
+    margin=14; labeljust=l; penwidth=1.0;
+
+    Ws     [label="websocket"];
+    Stdio  [label="stdio"];
+    Memory [label="memory"];
+
+    Ws -> Stdio -> Memory [style=invis];
+    { rank=same; Ws; Stdio; Memory; }
+  }
+
+  Store [
+    label=<<FONT POINT-SIZE="11"><B>arcp::store</B></FONT><BR/><FONT POINT-SIZE="8" COLOR="#64748B">rusqlite · idempotency · replay</FONT>>,
+    shape=cylinder, fillcolor="#1E293B"
+  ];
+
+  edge [color="#94A3B8", penwidth=1.2];
+  Client   -> Runtime  [dir=both, label="invoke / events"];
+  Client   -> Messages;
+  Runtime  -> Messages;
+  Messages -> Ws       [lhead=cluster_transport];
+
+  edge [color="#475569", penwidth=1.0];
+  Runtime -> Store;
+}

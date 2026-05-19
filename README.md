@@ -59,21 +59,10 @@ scripts/coverage.sh --html          # HTML report under target/llvm-cov
 
 ## Architecture
 
-```
-+---------------------------+
-|       arcp::client        |   ARCPClient — type-state Session<S>
-+---------------------------+
-|       arcp::runtime       |   ARCPRuntime — server, ToolContext, jobs,
-|                           |   subscriptions, leases (typed), artifacts,
-|                           |   pending registry
-+---------------------------+
-|       arcp::messages      |   tagged-enum MessageType + per-domain payloads
-+---------------------------+
-|  arcp::transport (trait)  |   websocket | stdio | memory (test)
-+---------------------------+
-|       arcp::store         |   rusqlite-backed event log (idempotency, replay)
-+---------------------------+
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/architecture-dark.svg">
+  <img alt="ARCP Rust SDK architecture — arcp::client and arcp::runtime exchange tagged-enum messages (arcp::messages) over arcp::transport (websocket/stdio/memory); arcp::runtime is backed by the rusqlite event log arcp::store" src="docs/diagrams/architecture-light.svg">
+</picture>
 
 ## Crate features
 
