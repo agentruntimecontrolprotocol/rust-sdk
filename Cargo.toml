@@ -75,6 +75,7 @@ tracing-test = "0.2"
 pretty_assertions = "1"
 tempfile = "3"
 insta = { version = "1", features = ["json"] }
+async-trait = "0.1"
 
 # Multi-file examples — single-file ones are picked up automatically by Cargo.
 [[example]]
@@ -124,6 +125,10 @@ path = "examples/mcp/main.rs"
 [[example]]
 name = "session_heartbeat"
 path = "examples/session_heartbeat/main.rs"
+
+[[example]]
+name = "session_ack"
+path = "examples/session_ack/main.rs"
 
 [lints.rust]
 unsafe_code = "deny"

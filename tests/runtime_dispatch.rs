@@ -16,7 +16,7 @@ use arcp::auth::BearerAuthenticator;
 use arcp::envelope::Envelope;
 use arcp::messages::{
     AuthScheme, CancelPayload, CancelTargetKind, Capabilities, ClientIdentity, Credentials,
-    MessageType, PingPayload, SessionPingPayload,
+    MessageType, PingPayload, SessionAckPayload, SessionPingPayload,
 };
 use arcp::runtime::ARCPRuntime;
 use arcp::transport::{paired, Transport};
@@ -118,6 +118,115 @@ async fn ping_dispatched_to_pong_after_handshake() {
         .expect("present");
     assert!(matches!(pong.payload, MessageType::Pong(_)));
     assert_eq!(pong.correlation_id.as_ref(), Some(&ping_id));
+}
+
+/// ARCP v1.1 §6.5 — the runtime pauses sending countable events past
+/// the configured `ack_window` and resumes on receipt of `session.ack`.
+#[tokio::test]
+async fn session_ack_unblocks_writer_when_window_exhausted() {
+    use arcp::error::ARCPError;
+    use arcp::messages::ToolInvokePayload;
+    use arcp::runtime::tools::{ToolHandler, ToolRegistryBuilder};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    struct EchoTool;
+    #[async_trait]
+    impl ToolHandler for EchoTool {
+        fn name(&self) -> &'static str {
+            "echo"
+        }
+        async fn invoke(
+            &self,
+            arguments: serde_json::Value,
+            _ctx: arcp::runtime::context::ToolContext,
+        ) -> Result<serde_json::Value, ARCPError> {
+            Ok(arguments)
+        }
+    }
+
+    let tools = ToolRegistryBuilder::new().with(Arc::new(EchoTool)).build();
+    let runtime = ARCPRuntime::builder()
+        .with_authenticator(Box::new(BearerAuthenticator::new().with_token("t", "p")))
+        .with_tools(tools)
+        .with_ack_window(1)
+        .build()
+        .await
+        .expect("build");
+    let (server_t, client_t) = paired();
+    let _h = runtime.serve_connection(server_t);
+
+    // Handshake.
+    let mut open = Envelope::new(MessageType::SessionOpen(
+        arcp::messages::SessionOpenPayload {
+            auth: Credentials {
+                scheme: AuthScheme::Bearer,
+                token: Some("t".into()),
+            },
+            client: ClientIdentity {
+                kind: "test".into(),
+                version: "0".into(),
+                fingerprint: None,
+                principal: None,
+            },
+            capabilities: Capabilities::default(),
+        },
+    ));
+    open.id = arcp::ids::MessageId::new();
+    client_t.send(open).await.expect("send open");
+    let accept = client_t.recv().await.expect("recv").expect("present");
+    let session_id = match accept.payload {
+        MessageType::SessionAccepted(p) => p.session_id,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+
+    // Submit an echo job. The runtime will try to emit job.accepted,
+    // job.started, and job.completed — all countable. With window=1 the
+    // first will flow, the rest will be parked until we ack.
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
+        tool: "echo".into(),
+        arguments: serde_json::json!({"hello": "world"}),
+    }));
+    invoke.session_id = Some(session_id.clone());
+    client_t.send(invoke).await.expect("send invoke");
+
+    // First countable event drains (job.accepted).
+    let first = tokio::time::timeout(Duration::from_millis(300), client_t.recv())
+        .await
+        .expect("timely")
+        .expect("recv")
+        .expect("present");
+    assert!(matches!(first.payload, MessageType::JobAccepted(_)));
+
+    // Window is now exhausted; no further countable event should arrive
+    // before we send the ack.
+    let result = tokio::time::timeout(Duration::from_millis(150), client_t.recv()).await;
+    assert!(
+        result.is_err(),
+        "writer should be paused, but got: {result:?}"
+    );
+
+    // Send session.ack — writer resumes.
+    let mut ack = Envelope::new(MessageType::SessionAck(SessionAckPayload {
+        last_processed_seq: 1,
+    }));
+    ack.session_id = Some(session_id);
+    client_t.send(ack).await.expect("send ack");
+
+    // Now subsequent countable events flow.
+    let next = tokio::time::timeout(Duration::from_secs(1), client_t.recv())
+        .await
+        .expect("timely")
+        .expect("recv")
+        .expect("present");
+    assert!(
+        matches!(
+            next.payload,
+            MessageType::JobStarted(_) | MessageType::JobCompleted(_)
+        ),
+        "expected job.started/completed, got {:?}",
+        next.payload
+    );
 }
 
 /// ARCP v1.1 §6.4 — `session.ping` from the client must be answered with

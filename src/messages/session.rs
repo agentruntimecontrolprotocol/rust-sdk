@@ -177,3 +177,15 @@ pub struct SessionPongPayload {
     /// Receiver timestamp (RFC 3339).
     pub received_at: chrono::DateTime<chrono::Utc>,
 }
+
+/// Payload for `session.ack` (ARCP v1.1 §6.5).
+///
+/// The client periodically informs the runtime of its highest processed
+/// event sequence; the runtime MAY free buffered events with
+/// `seq <= last_processed_seq` and MAY use the lag between the latest
+/// emitted seq and `last_processed_seq` to detect slow consumers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionAckPayload {
+    /// Highest event sequence the client has processed.
+    pub last_processed_seq: u64,
+}

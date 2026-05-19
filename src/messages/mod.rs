@@ -49,7 +49,7 @@ pub use permissions::{
 };
 pub use session::{
     AuthScheme, ClientIdentity, Credentials, RuntimeIdentity, SessionAcceptedPayload,
-    SessionAuthenticatePayload, SessionChallengePayload, SessionClosePayload,
+    SessionAckPayload, SessionAuthenticatePayload, SessionChallengePayload, SessionClosePayload,
     SessionEvictedPayload, SessionLease, SessionOpenPayload, SessionPingPayload,
     SessionPongPayload, SessionRefreshPayload, SessionRejectedPayload,
     SessionUnauthenticatedPayload,
@@ -221,6 +221,9 @@ pub enum MessageType {
     /// `session.pong` (ARCP v1.1 §6.4) — response to `session.ping`.
     #[serde(rename = "session.pong")]
     SessionPong(SessionPongPayload),
+    /// `session.ack` (ARCP v1.1 §6.5) — client-side flow-control ack.
+    #[serde(rename = "session.ack")]
+    SessionAck(SessionAckPayload),
 
     // Control
     /// `ping`
@@ -402,6 +405,7 @@ impl MessageType {
             Self::SessionClose(_) => "session.close",
             Self::SessionPing(_) => "session.ping",
             Self::SessionPong(_) => "session.pong",
+            Self::SessionAck(_) => "session.ack",
             Self::Ping(_) => "ping",
             Self::Pong(_) => "pong",
             Self::Ack(_) => "ack",
@@ -466,6 +470,33 @@ impl MessageType {
                 | Self::SessionAccepted(_)
                 | Self::SessionUnauthenticated(_)
                 | Self::SessionRejected(_)
+        )
+    }
+
+    /// True if this variant participates in `event_seq` and is therefore
+    /// subject to `session.ack` flow control (ARCP v1.1 §6.5).
+    ///
+    /// Session-control envelopes (handshake, heartbeat, ack, close, evict,
+    /// refresh) are NOT counted. Everything else — job events, tool
+    /// results, stream chunks, telemetry, artifacts, subscriptions — IS.
+    #[must_use]
+    pub const fn is_countable_event(&self) -> bool {
+        !matches!(
+            self,
+            Self::SessionOpen(_)
+                | Self::SessionChallenge(_)
+                | Self::SessionAuthenticate(_)
+                | Self::SessionAccepted(_)
+                | Self::SessionUnauthenticated(_)
+                | Self::SessionRejected(_)
+                | Self::SessionRefresh(_)
+                | Self::SessionEvicted(_)
+                | Self::SessionClose(_)
+                | Self::SessionPing(_)
+                | Self::SessionPong(_)
+                | Self::SessionAck(_)
+                | Self::Ping(_)
+                | Self::Pong(_)
         )
     }
 }
@@ -598,6 +629,45 @@ mod tests {
         let json = serde_json::to_string(&m).expect("serialize");
         let back: MessageType = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(m, back);
+    }
+
+    #[test]
+    fn session_ack_round_trips_through_serde() {
+        let m = MessageType::SessionAck(SessionAckPayload {
+            last_processed_seq: 1827,
+        });
+        let json = serde_json::to_string(&m).expect("serialize");
+        let back: MessageType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(m, back);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("value");
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "type": "session.ack",
+                "payload": { "last_processed_seq": 1827 },
+            })
+        );
+    }
+
+    #[test]
+    fn countable_event_classification_excludes_session_control() {
+        let now = chrono::Utc::now();
+        assert!(!MessageType::SessionPing(SessionPingPayload {
+            nonce: "n".into(),
+            sent_at: now,
+        })
+        .is_countable_event());
+        assert!(!MessageType::SessionAck(SessionAckPayload {
+            last_processed_seq: 0,
+        })
+        .is_countable_event());
+        assert!(!MessageType::Ping(PingPayload::default()).is_countable_event());
+        assert!(
+            MessageType::JobAccepted(crate::messages::JobAcceptedPayload {
+                job_id: crate::ids::JobId::new(),
+            })
+            .is_countable_event()
+        );
     }
 
     #[test]
@@ -794,6 +864,12 @@ mod tests {
                     received_at: now,
                 }),
                 "session.pong",
+            ),
+            (
+                MessageType::SessionAck(SessionAckPayload {
+                    last_processed_seq: 0,
+                }),
+                "session.ack",
             ),
             (MessageType::Ping(PingPayload::default()), "ping"),
             (MessageType::Pong(PongPayload::default()), "pong"),
@@ -1142,8 +1218,8 @@ mod tests {
         for (msg, expected) in &cases {
             assert_eq!(msg.type_name(), *expected);
         }
-        // 60 message variants — sanity-check we built exactly that many.
+        // 61 message variants — sanity-check we built exactly that many.
         // Bump this when MessageType grows in v0.2.
-        assert_eq!(cases.len(), 60);
+        assert_eq!(cases.len(), 61);
     }
 }

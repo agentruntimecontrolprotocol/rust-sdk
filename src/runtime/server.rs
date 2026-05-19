@@ -2,10 +2,11 @@
 //! and dispatches subsequent envelopes.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Notify};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -41,6 +42,7 @@ pub struct RuntimeBuilder {
     advertised_capabilities: Capabilities,
     runtime_identity: RuntimeIdentity,
     session_lease_seconds: Option<u64>,
+    ack_window: Option<u64>,
 }
 
 impl Default for RuntimeBuilder {
@@ -75,6 +77,7 @@ impl RuntimeBuilder {
                 trust_level: Some("trusted".into()),
             },
             session_lease_seconds: Some(3600),
+            ack_window: None,
         }
     }
 
@@ -113,6 +116,18 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Set the size of the `session.ack` sliding window (ARCP v1.1 §6.5).
+    ///
+    /// When set, the writer will pause outbound countable envelopes once
+    /// `emitted - last_processed_seq >= window` and resume on the next
+    /// `session.ack`. Set to `None` (default) to disable window-based
+    /// flow control entirely.
+    #[must_use]
+    pub const fn with_ack_window(mut self, window: u64) -> Self {
+        self.ack_window = Some(window);
+        self
+    }
+
     /// Construct an [`ARCPRuntime`] sharing this configuration. The
     /// returned runtime is cheap to clone.
     ///
@@ -129,6 +144,7 @@ impl RuntimeBuilder {
                 advertised_capabilities: self.advertised_capabilities,
                 runtime_identity: self.runtime_identity,
                 session_lease_seconds: self.session_lease_seconds,
+                ack_window: self.ack_window,
                 extension_registry: ExtensionRegistry::new(),
                 event_log,
                 artifacts: ArtifactStore::new(),
@@ -144,6 +160,9 @@ struct RuntimeInner {
     advertised_capabilities: Capabilities,
     runtime_identity: RuntimeIdentity,
     session_lease_seconds: Option<u64>,
+    /// Size of the `session.ack` sliding window, in countable events.
+    /// `None` disables window-based flow control (default).
+    ack_window: Option<u64>,
     #[allow(dead_code)]
     extension_registry: ExtensionRegistry,
     event_log: EventLog,
@@ -221,6 +240,17 @@ impl ARCPRuntime {
         let writer_transport = Arc::clone(&transport);
         let event_log = self.inner.event_log.clone();
         let writer_subs = self.inner.subscriptions.clone();
+        // ARCP v1.1 §6.5 flow-control state. `emitted` increments per
+        // countable outbound envelope; `last_ack` is updated when the
+        // client sends `session.ack`. The writer waits on `ack_notify`
+        // when the in-flight window is full.
+        let ack_window = self.inner.ack_window;
+        let emitted = Arc::new(AtomicU64::new(0));
+        let last_ack = Arc::new(AtomicU64::new(0));
+        let ack_notify = Arc::new(Notify::new());
+        let writer_emitted = Arc::clone(&emitted);
+        let writer_last_ack = Arc::clone(&last_ack);
+        let writer_ack_notify = Arc::clone(&ack_notify);
         let writer = tokio::spawn(async move {
             while let Some(env) = out_rx.recv().await {
                 if let Err(e) = event_log.append(&env).await {
@@ -233,6 +263,23 @@ impl ARCPRuntime {
                 // echo storm whenever a filter matches subscribe.event.
                 if !matches!(env.payload, MessageType::SubscribeEvent(_)) {
                     let _ = writer_subs.publish(&env);
+                }
+                // Flow control (§6.5): for countable events, gate on the
+                // sliding window. Non-countable envelopes (heartbeats,
+                // session control) bypass the gate.
+                if let Some(window) = ack_window {
+                    if env.payload.is_countable_event() {
+                        loop {
+                            let in_flight = writer_emitted
+                                .load(Ordering::Acquire)
+                                .saturating_sub(writer_last_ack.load(Ordering::Acquire));
+                            if in_flight < window {
+                                break;
+                            }
+                            writer_ack_notify.notified().await;
+                        }
+                        writer_emitted.fetch_add(1, Ordering::AcqRel);
+                    }
                 }
                 if let Err(e) = writer_transport.send(env).await {
                     tracing::warn!(error = %e, "transport send failed; closing writer");
@@ -372,6 +419,15 @@ impl ARCPRuntime {
                     // (see `client::heartbeat`); the runtime treats them as
                     // liveness evidence implicitly via transport.recv().
                 }
+                MessageType::SessionAck(payload) => {
+                    // ARCP v1.1 §6.5: monotonically advance the
+                    // last-acked counter and wake the writer.
+                    let cur = last_ack.load(Ordering::Acquire);
+                    if payload.last_processed_seq > cur {
+                        last_ack.store(payload.last_processed_seq, Ordering::Release);
+                        ack_notify.notify_waiters();
+                    }
+                }
                 MessageType::Subscribe(payload) => {
                     if let Some(s) = state.as_ref() {
                         Self::handle_subscribe(
@@ -445,6 +501,9 @@ impl ARCPRuntime {
         }
         connection_subs.clear();
         drop(out_tx);
+        // Wake the writer if it's currently parked on the ack window so
+        // it can observe the closed channel and exit.
+        ack_notify.notify_waiters();
         let _ = writer.await;
         result
     }
