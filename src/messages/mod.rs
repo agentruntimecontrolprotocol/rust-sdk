@@ -34,10 +34,11 @@ pub use control::{
     CancelTargetKind, InterruptPayload, NackPayload, ResumePayload,
 };
 pub use execution::{
-    AgentDelegatePayload, AgentHandoffPayload, JobAcceptedPayload, JobCancelledPayload,
-    JobCheckpointPayload, JobCompletedPayload, JobFailedPayload, JobHeartbeatPayload,
-    JobProgressPayload, JobSchedulePayload, JobStartedPayload, JobState, ToolErrorPayload,
-    ToolInvokePayload, ToolResultPayload, WorkflowCompletePayload, WorkflowStartPayload,
+    AgentDelegatePayload, AgentHandoffPayload, AgentRef, AgentRefParseError, JobAcceptedPayload,
+    JobCancelledPayload, JobCheckpointPayload, JobCompletedPayload, JobFailedPayload,
+    JobHeartbeatPayload, JobProgressPayload, JobSchedulePayload, JobStartedPayload, JobState,
+    ToolErrorPayload, ToolInvokePayload, ToolResultPayload, WorkflowCompletePayload,
+    WorkflowStartPayload,
 };
 pub use human::{
     ChoiceOption, HumanChoiceRequestPayload, HumanChoiceResponsePayload,
@@ -116,6 +117,11 @@ pub struct Capabilities {
     /// Per RFC §16.3 — artifact retention policy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact_retention: Option<ArtifactRetention>,
+    /// Per ARCP v1.1 §7.5 — runtime-side advertisement of available
+    /// agents. The wire shape supports both a v1.0-compatible flat list
+    /// of names and the v1.1 rich form with versions and a `default`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<AgentInventory>,
     /// Forward-compatibility catch-all for unknown booleans / objects
     /// advertised by the peer (PLAN.md §A4 choice).
     #[serde(flatten)]
@@ -129,6 +135,75 @@ pub struct ArtifactRetention {
     pub default_seconds: u64,
     /// Maximum retention in seconds.
     pub max_seconds: u64,
+}
+
+/// One entry in the rich v1.1 form of `capabilities.agents`
+/// (ARCP v1.1 §7.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentInventoryEntry {
+    /// Agent name (matches the §7.5 `name` grammar).
+    pub name: String,
+    /// Available versions for this agent. May be empty if the runtime
+    /// advertises the agent without enumerating versions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<String>,
+    /// Version a bare-name reference resolves to. `None` means the
+    /// runtime MAY pick any registered version (§7.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+}
+
+/// Runtime-side agent inventory advertisement in [`Capabilities`]
+/// (ARCP v1.1 §7.5).
+///
+/// Serializes as either a v1.0-compatible flat array of bare names or
+/// the v1.1 rich array of [`AgentInventoryEntry`]. Both forms are
+/// accepted on deserialize.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AgentInventory {
+    /// v1.0-compatible flat list of bare agent names.
+    Flat(Vec<String>),
+    /// v1.1 rich list with versions and defaults.
+    Rich(Vec<AgentInventoryEntry>),
+}
+
+impl AgentInventory {
+    /// Normalise into the rich v1.1 shape; flat entries become rich
+    /// entries with empty `versions` and no `default`.
+    #[must_use]
+    pub fn into_rich(self) -> Vec<AgentInventoryEntry> {
+        match self {
+            Self::Flat(names) => names
+                .into_iter()
+                .map(|name| AgentInventoryEntry {
+                    name,
+                    versions: vec![],
+                    default: None,
+                })
+                .collect(),
+            Self::Rich(entries) => entries,
+        }
+    }
+
+    /// True if `agent` is satisfied by this inventory per §7.5
+    /// resolution rules. Bare names match any inventory entry with that
+    /// name; pinned `name@version` must appear in that entry's
+    /// `versions` list. Flat (v1.0) entries match any version since the
+    /// runtime does not enumerate them.
+    #[must_use]
+    pub fn satisfies(&self, agent: &execution::AgentRef) -> bool {
+        match self {
+            Self::Flat(names) => names.iter().any(|n| n == &agent.name),
+            Self::Rich(entries) => entries.iter().any(|e| {
+                e.name == agent.name
+                    && agent
+                        .version
+                        .as_ref()
+                        .is_none_or(|v| e.versions.iter().any(|known| known == v))
+            }),
+        }
+    }
 }
 
 impl Capabilities {
@@ -774,6 +849,69 @@ mod tests {
         let c = Capabilities::default();
         assert!(!c.has(CapabilityName::Streaming));
         assert!(!c.has(CapabilityName::Anonymous));
+    }
+
+    #[test]
+    fn capabilities_with_flat_agents_round_trips() {
+        // v1.0-compatible shape: agents as a flat array of names.
+        let json = serde_json::json!({
+            "agents": ["code-refactor", "web-research"],
+        });
+        let c: Capabilities = serde_json::from_value(json.clone()).expect("deserialize");
+        match c.agents.as_ref().expect("agents present") {
+            AgentInventory::Flat(names) => {
+                assert_eq!(
+                    names,
+                    &vec!["code-refactor".to_owned(), "web-research".into()]
+                );
+            }
+            AgentInventory::Rich(_) => panic!("expected flat shape"),
+        }
+        let re = serde_json::to_value(&c).expect("serialize");
+        assert_eq!(re["agents"], json["agents"]);
+    }
+
+    #[test]
+    fn capabilities_with_rich_agents_round_trips() {
+        // v1.1 rich shape: agents as a list of {name, versions, default}.
+        let json = serde_json::json!({
+            "agents": [
+                { "name": "code-refactor", "versions": ["1.0.0", "2.0.0"], "default": "2.0.0" },
+                { "name": "indexer", "versions": ["0.9.0"] },
+            ],
+        });
+        let c: Capabilities = serde_json::from_value(json).expect("deserialize");
+        let inv = c.agents.as_ref().expect("agents present");
+        match inv {
+            AgentInventory::Rich(entries) => {
+                assert_eq!(entries.len(), 2);
+                assert_eq!(entries[0].name, "code-refactor");
+                assert_eq!(
+                    entries[0].versions,
+                    vec!["1.0.0".to_owned(), "2.0.0".into()]
+                );
+                assert_eq!(entries[0].default.as_deref(), Some("2.0.0"));
+            }
+            AgentInventory::Flat(_) => panic!("expected rich shape"),
+        }
+    }
+
+    #[test]
+    fn agent_inventory_satisfies_resolution_rules() {
+        let flat = AgentInventory::Flat(vec!["echo".into()]);
+        // Flat (v1.0) satisfies any version (runtime didn't enumerate).
+        assert!(flat.satisfies(&crate::messages::AgentRef::parse("echo").expect("parse")));
+        assert!(flat.satisfies(&crate::messages::AgentRef::parse("echo@1.0.0").expect("parse")));
+
+        let rich = AgentInventory::Rich(vec![AgentInventoryEntry {
+            name: "echo".into(),
+            versions: vec!["1.0.0".into(), "2.0.0".into()],
+            default: Some("2.0.0".into()),
+        }]);
+        assert!(rich.satisfies(&crate::messages::AgentRef::parse("echo").expect("parse")));
+        assert!(rich.satisfies(&crate::messages::AgentRef::parse("echo@1.0.0").expect("parse")));
+        assert!(!rich.satisfies(&crate::messages::AgentRef::parse("echo@9.9.9").expect("parse")));
+        assert!(!rich.satisfies(&crate::messages::AgentRef::parse("other").expect("parse")));
     }
 
     #[test]

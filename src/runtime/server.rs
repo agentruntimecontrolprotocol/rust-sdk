@@ -633,7 +633,7 @@ impl ARCPRuntime {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn spawn_tool_invoke(
         &self,
         out: &mpsc::Sender<Envelope>,
@@ -655,11 +655,52 @@ impl ARCPRuntime {
         accepted.job_id = Some(job_id.clone());
         let _ = out.send(accepted).await;
 
-        let Some(handler) = self.inner.tools.get(&payload.tool) else {
+        // ARCP v1.1 §7.5: parse the requested tool/agent as an
+        // AgentRef so a `name@version` reference resolves correctly.
+        let agent_ref = match crate::messages::AgentRef::parse(&payload.tool) {
+            Ok(r) => r,
+            Err(e) => {
+                let mut err = Envelope::new(MessageType::JobFailed(JobFailedPayload {
+                    code: ErrorCode::InvalidArgument,
+                    retryable: Some(false),
+                    message: format!("invalid agent reference {}: {e}", payload.tool),
+                    details: None,
+                }));
+                err.correlation_id = Some(correlation_id);
+                err.session_id = Some(session_id);
+                err.job_id = Some(job_id);
+                let _ = out.send(err).await;
+                return;
+            }
+        };
+
+        // If a version is pinned, the advertised inventory MUST satisfy
+        // it (§7.5). Surface AGENT_VERSION_NOT_AVAILABLE on miss.
+        if agent_ref.version.is_some() {
+            let advertised = &self.inner.advertised_capabilities.agents;
+            let satisfied = advertised
+                .as_ref()
+                .is_some_and(|inv| inv.satisfies(&agent_ref));
+            if !satisfied {
+                let mut err = Envelope::new(MessageType::JobFailed(JobFailedPayload {
+                    code: ErrorCode::AgentVersionNotAvailable,
+                    retryable: Some(false),
+                    message: format!("agent version not available: {}", agent_ref.format()),
+                    details: None,
+                }));
+                err.correlation_id = Some(correlation_id);
+                err.session_id = Some(session_id);
+                err.job_id = Some(job_id);
+                let _ = out.send(err).await;
+                return;
+            }
+        }
+
+        let Some(handler) = self.inner.tools.get(&agent_ref.name) else {
             let mut err = Envelope::new(MessageType::JobFailed(JobFailedPayload {
                 code: ErrorCode::NotFound,
                 retryable: Some(false),
-                message: format!("tool not registered: {}", payload.tool),
+                message: format!("tool not registered: {}", agent_ref.name),
                 details: None,
             }));
             err.correlation_id = Some(correlation_id);
@@ -676,7 +717,8 @@ impl ARCPRuntime {
             correlation_id: correlation_id.clone(),
             cancel: cancel.clone(),
             state: JobState::Accepted,
-            agent: payload.tool.clone(),
+            // §7.5: listings show the resolved `name@version` string.
+            agent: agent_ref.format(),
             created_at: chrono::Utc::now(),
             last_event_seq: 0,
             parent_job_id: None,
@@ -814,6 +856,11 @@ impl ARCPRuntime {
                 .cloned()
                 .collect(),
             artifact_retention: runtime_caps.artifact_retention.clone(),
+            // ARCP v1.1 §7.5 — pass the runtime's agent inventory
+            // through to the negotiated capability block. Clients
+            // typically do not advertise agents, so this is a
+            // server-side pass-through.
+            agents: runtime_caps.agents.clone(),
             extra: std::collections::BTreeMap::new(),
         }
     }

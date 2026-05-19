@@ -5,6 +5,193 @@ use serde::{Deserialize, Serialize};
 use crate::error::ErrorCode;
 use crate::ids::JobId;
 
+/// Parsed agent identifier per ARCP v1.1 §7.5.
+///
+/// Grammar (§7.5):
+///
+/// ```text
+/// agent   ::= name | name "@" version
+/// name    ::= [a-z0-9][a-z0-9._-]*
+/// version ::= [a-zA-Z0-9.+_-]+
+/// ```
+///
+/// `version` is `None` for a bare-name reference. Bare names resolve to
+/// the runtime's advertised `default` for that agent (see
+/// `Capabilities::agents`); pinned versions match exactly and surface
+/// [`crate::error::ErrorCode::AgentVersionNotAvailable`] if missing.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AgentRef {
+    /// Bare agent name (without the `@version` suffix).
+    pub name: String,
+    /// Optional pinned version. `None` means "resolve to default".
+    pub version: Option<String>,
+}
+
+/// Error returned by [`AgentRef::parse`] for inputs that violate the
+/// §7.5 grammar.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AgentRefParseError {
+    /// The bare-name component is empty or does not match
+    /// `[a-z0-9][a-z0-9._-]*`.
+    #[error("invalid agent name {0:?}")]
+    InvalidName(String),
+    /// The `version` component does not match `[a-zA-Z0-9.+_-]+`.
+    #[error("invalid agent version {0:?}")]
+    InvalidVersion(String),
+}
+
+const fn is_name_head(c: char) -> bool {
+    matches!(c, 'a'..='z' | '0'..='9')
+}
+
+const fn is_name_tail(c: char) -> bool {
+    matches!(c, 'a'..='z' | '0'..='9' | '.' | '_' | '-')
+}
+
+const fn is_version_char(c: char) -> bool {
+    matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '+' | '_' | '-')
+}
+
+fn validate_name(name: &str) -> Result<(), AgentRefParseError> {
+    let mut chars = name.chars();
+    let Some(head) = chars.next() else {
+        return Err(AgentRefParseError::InvalidName(name.to_owned()));
+    };
+    if !is_name_head(head) {
+        return Err(AgentRefParseError::InvalidName(name.to_owned()));
+    }
+    for c in chars {
+        if !is_name_tail(c) {
+            return Err(AgentRefParseError::InvalidName(name.to_owned()));
+        }
+    }
+    Ok(())
+}
+
+fn validate_version(version: &str) -> Result<(), AgentRefParseError> {
+    if version.is_empty() {
+        return Err(AgentRefParseError::InvalidVersion(version.to_owned()));
+    }
+    for c in version.chars() {
+        if !is_version_char(c) {
+            return Err(AgentRefParseError::InvalidVersion(version.to_owned()));
+        }
+    }
+    Ok(())
+}
+
+impl AgentRef {
+    /// Parse an `agent` identifier per ARCP v1.1 §7.5.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AgentRefParseError`] when either the bare name or the
+    /// version component violates its grammar.
+    pub fn parse(input: &str) -> Result<Self, AgentRefParseError> {
+        if let Some(at) = input.find('@') {
+            let (name, rest) = input.split_at(at);
+            // `rest` includes the `@`; skip it.
+            let version = &rest[1..];
+            validate_name(name)?;
+            validate_version(version)?;
+            Ok(Self {
+                name: name.to_owned(),
+                version: Some(version.to_owned()),
+            })
+        } else {
+            validate_name(input)?;
+            Ok(Self {
+                name: input.to_owned(),
+                version: None,
+            })
+        }
+    }
+
+    /// Format back to the wire `name` or `name@version` string.
+    #[must_use]
+    pub fn format(&self) -> String {
+        self.version.as_ref().map_or_else(
+            || self.name.clone(),
+            |v| format!("{name}@{v}", name = self.name),
+        )
+    }
+}
+
+impl std::fmt::Display for AgentRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.format())
+    }
+}
+
+impl std::str::FromStr for AgentRef {
+    type Err = AgentRefParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
+impl Serialize for AgentRef {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.format())
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(D::Error::custom)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod agent_ref_tests {
+    use super::*;
+
+    #[test]
+    fn parse_bare_name() {
+        let r = AgentRef::parse("code-refactor").unwrap();
+        assert_eq!(r.name, "code-refactor");
+        assert!(r.version.is_none());
+    }
+
+    #[test]
+    fn parse_name_at_version() {
+        let r = AgentRef::parse("code-refactor@2.0.0").unwrap();
+        assert_eq!(r.name, "code-refactor");
+        assert_eq!(r.version.as_deref(), Some("2.0.0"));
+    }
+
+    #[test]
+    fn format_round_trips() {
+        for s in ["a", "a-b", "a@1.0.0", "agent_x@v1.2.3+build.4"] {
+            let r = AgentRef::parse(s).unwrap();
+            assert_eq!(r.format(), s);
+        }
+    }
+
+    #[test]
+    fn rejects_uppercase_in_name() {
+        assert!(AgentRef::parse("CodeRefactor").is_err());
+        assert!(AgentRef::parse("Foo@1").is_err());
+    }
+
+    #[test]
+    fn rejects_empty_version() {
+        assert!(AgentRef::parse("ok@").is_err());
+    }
+
+    #[test]
+    fn serde_round_trip() {
+        let r = AgentRef::parse("web-research@1.0.0").unwrap();
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(json, "\"web-research@1.0.0\"");
+        let back: AgentRef = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, r);
+    }
+}
+
 /// Payload for `tool.invoke`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolInvokePayload {

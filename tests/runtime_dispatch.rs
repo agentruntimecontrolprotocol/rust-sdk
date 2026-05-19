@@ -120,6 +120,98 @@ async fn ping_dispatched_to_pong_after_handshake() {
     assert_eq!(pong.correlation_id.as_ref(), Some(&ping_id));
 }
 
+/// ARCP v1.1 §7.5 — submitting a job with `agent@unknown-version`
+/// surfaces `AGENT_VERSION_NOT_AVAILABLE`.
+#[tokio::test]
+async fn job_submit_with_unknown_agent_version_yields_error() {
+    use arcp::error::{ARCPError, ErrorCode};
+    use arcp::messages::{AgentInventory, AgentInventoryEntry, ToolInvokePayload};
+    use arcp::runtime::tools::{ToolHandler, ToolRegistryBuilder};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    struct Echo;
+    #[async_trait]
+    impl ToolHandler for Echo {
+        fn name(&self) -> &'static str {
+            "echo"
+        }
+        async fn invoke(
+            &self,
+            arguments: serde_json::Value,
+            _ctx: arcp::runtime::context::ToolContext,
+        ) -> Result<serde_json::Value, ARCPError> {
+            Ok(arguments)
+        }
+    }
+
+    // Advertise echo only at version 1.0.0.
+    let caps = Capabilities {
+        agents: Some(AgentInventory::Rich(vec![AgentInventoryEntry {
+            name: "echo".into(),
+            versions: vec!["1.0.0".into()],
+            default: Some("1.0.0".into()),
+        }])),
+        ..Capabilities::default()
+    };
+
+    let tools = ToolRegistryBuilder::new().with(Arc::new(Echo)).build();
+    let runtime = ARCPRuntime::builder()
+        .with_authenticator(Box::new(BearerAuthenticator::new().with_token("t", "p")))
+        .with_tools(tools)
+        .with_capabilities(caps)
+        .build()
+        .await
+        .expect("build");
+    let (server_t, client_t) = paired();
+    let _h = runtime.serve_connection(server_t);
+
+    let mut open = Envelope::new(MessageType::SessionOpen(
+        arcp::messages::SessionOpenPayload {
+            auth: Credentials {
+                scheme: AuthScheme::Bearer,
+                token: Some("t".into()),
+            },
+            client: ClientIdentity {
+                kind: "test".into(),
+                version: "0".into(),
+                fingerprint: None,
+                principal: None,
+            },
+            capabilities: Capabilities::default(),
+        },
+    ));
+    open.id = arcp::ids::MessageId::new();
+    client_t.send(open).await.expect("send open");
+    let accepted = client_t.recv().await.expect("recv").expect("present");
+    let session_id = match accepted.payload {
+        MessageType::SessionAccepted(p) => p.session_id,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+
+    // Submit echo@2.0.0 — version not advertised.
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
+        tool: "echo@2.0.0".into(),
+        arguments: serde_json::json!({}),
+    }));
+    invoke.session_id = Some(session_id);
+    client_t.send(invoke).await.expect("send invoke");
+
+    let _ = client_t.recv().await.expect("recv").expect("job.accepted");
+    let next = tokio::time::timeout(Duration::from_millis(500), client_t.recv())
+        .await
+        .expect("timely")
+        .expect("recv")
+        .expect("present");
+    match next.payload {
+        MessageType::JobFailed(p) => {
+            assert_eq!(p.code, ErrorCode::AgentVersionNotAvailable);
+            assert_eq!(p.retryable, Some(false));
+        }
+        other => panic!("expected job.failed, got {other:?}"),
+    }
+}
+
 /// ARCP v1.1 §6.6 — `session.list_jobs` returns the jobs visible to
 /// the current session as a `session.jobs` envelope.
 #[tokio::test]
