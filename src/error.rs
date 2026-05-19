@@ -93,6 +93,12 @@ pub enum ErrorCode {
     /// `BACKPRESSURE_OVERFLOW`
     #[serde(rename = "BACKPRESSURE_OVERFLOW")]
     BackpressureOverflow,
+    /// `BUDGET_EXHAUSTED` (ARCP v1.1 §12; §9.6)
+    #[serde(rename = "BUDGET_EXHAUSTED")]
+    BudgetExhausted,
+    /// `AGENT_VERSION_NOT_AVAILABLE` (ARCP v1.1 §12; §7.5)
+    #[serde(rename = "AGENT_VERSION_NOT_AVAILABLE")]
+    AgentVersionNotAvailable,
 }
 
 impl ErrorCode {
@@ -139,6 +145,8 @@ impl ErrorCode {
             Self::LeaseExpired => "LEASE_EXPIRED",
             Self::LeaseRevoked => "LEASE_REVOKED",
             Self::BackpressureOverflow => "BACKPRESSURE_OVERFLOW",
+            Self::BudgetExhausted => "BUDGET_EXHAUSTED",
+            Self::AgentVersionNotAvailable => "AGENT_VERSION_NOT_AVAILABLE",
         }
     }
 }
@@ -302,6 +310,22 @@ pub enum ARCPError {
         detail: String,
     },
 
+    /// A `cost.budget` capability counter reached its maximum (ARCP v1.1 §9.6).
+    #[error("budget exhausted: {detail}")]
+    BudgetExhausted {
+        /// Description of the exhausted budget counter.
+        detail: String,
+    },
+
+    /// `job.submit` named an `agent@version` the runtime does not have (ARCP v1.1 §7.5).
+    #[error("agent version not available: {agent}@{version}")]
+    AgentVersionNotAvailable {
+        /// Agent name.
+        agent: String,
+        /// Requested version.
+        version: String,
+    },
+
     /// Unknown error. Avoid in favour of a specific code.
     #[error("unknown error: {detail}")]
     Unknown {
@@ -350,6 +374,8 @@ impl ARCPError {
             Self::LeaseExpired { .. } => ErrorCode::LeaseExpired,
             Self::LeaseRevoked { .. } => ErrorCode::LeaseRevoked,
             Self::BackpressureOverflow { .. } => ErrorCode::BackpressureOverflow,
+            Self::BudgetExhausted { .. } => ErrorCode::BudgetExhausted,
+            Self::AgentVersionNotAvailable { .. } => ErrorCode::AgentVersionNotAvailable,
             Self::Unknown { .. } | Self::Serialization(_) => ErrorCode::Unknown,
         }
     }
@@ -394,6 +420,8 @@ mod tests {
             ErrorCode::LeaseExpired,
             ErrorCode::LeaseRevoked,
             ErrorCode::BackpressureOverflow,
+            ErrorCode::BudgetExhausted,
+            ErrorCode::AgentVersionNotAvailable,
             ErrorCode::Unknown,
         ] {
             let s = serde_json::to_string(&code).expect("serialize");
@@ -450,6 +478,46 @@ mod tests {
         let parse_err: IdParseError = "junk".parse::<crate::ids::SessionId>().unwrap_err();
         let err: ARCPError = parse_err.into();
         assert_eq!(err.code(), ErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn v1_1_error_codes_serialize_to_wire_strings() {
+        assert_eq!(ErrorCode::BudgetExhausted.as_str(), "BUDGET_EXHAUSTED");
+        assert_eq!(ErrorCode::LeaseExpired.as_str(), "LEASE_EXPIRED");
+        assert_eq!(
+            ErrorCode::AgentVersionNotAvailable.as_str(),
+            "AGENT_VERSION_NOT_AVAILABLE"
+        );
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::BudgetExhausted).expect("serialize"),
+            "\"BUDGET_EXHAUSTED\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::AgentVersionNotAvailable).expect("serialize"),
+            "\"AGENT_VERSION_NOT_AVAILABLE\""
+        );
+        let budget: ErrorCode =
+            serde_json::from_str("\"BUDGET_EXHAUSTED\"").expect("deserialize budget");
+        assert_eq!(budget, ErrorCode::BudgetExhausted);
+        let agent_ver: ErrorCode = serde_json::from_str("\"AGENT_VERSION_NOT_AVAILABLE\"")
+            .expect("deserialize agent version");
+        assert_eq!(agent_ver, ErrorCode::AgentVersionNotAvailable);
+    }
+
+    #[test]
+    fn v1_1_arcp_errors_map_to_canonical_codes() {
+        let budget = ARCPError::BudgetExhausted {
+            detail: "cost.budget USD counter <= 0".into(),
+        };
+        assert_eq!(budget.code(), ErrorCode::BudgetExhausted);
+        assert!(!budget.retryable());
+
+        let agent_ver = ARCPError::AgentVersionNotAvailable {
+            agent: "summarizer".into(),
+            version: "2.3.0".into(),
+        };
+        assert_eq!(agent_ver.code(), ErrorCode::AgentVersionNotAvailable);
+        assert!(!agent_ver.retryable());
     }
 
     #[test]
