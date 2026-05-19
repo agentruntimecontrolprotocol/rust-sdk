@@ -80,10 +80,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Submit two sleep jobs.
     for _ in 0..2 {
-        let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
-            tool: "sleep".into(),
-            arguments: serde_json::json!({}),
-        }));
+        let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+            "sleep",
+            serde_json::json!({}),
+        )));
         invoke.session_id = Some(session_id.clone());
         client_t.send(invoke).await?;
         // Drain job.accepted so the listing observes a running job

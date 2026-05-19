@@ -46,8 +46,9 @@ pub use human::{
     HumanInputCancelledPayload, HumanInputRequestPayload, HumanInputResponsePayload,
 };
 pub use permissions::{
-    LeaseExtendedPayload, LeaseGrantedPayload, LeaseRefreshPayload, LeaseRevokedPayload,
-    PermissionDenyPayload, PermissionGrantPayload, PermissionRequestPayload, TrustLevel,
+    CostBudget, CostBudgetAmount, CostBudgetParseError, LeaseExtendedPayload, LeaseGrantedPayload,
+    LeaseRefreshPayload, LeaseRevokedPayload, PermissionDenyPayload, PermissionGrantPayload,
+    PermissionRequestPayload, TrustLevel,
 };
 pub use session::{
     AuthScheme, ClientIdentity, Credentials, JobListEntry, RuntimeIdentity, SessionAcceptedPayload,
@@ -1142,10 +1143,7 @@ mod tests {
                 "backpressure",
             ),
             (
-                MessageType::ToolInvoke(ToolInvokePayload {
-                    tool: "x".into(),
-                    arguments: serde_json::json!({}),
-                }),
+                MessageType::ToolInvoke(ToolInvokePayload::new("x", serde_json::json!({}))),
                 "tool.invoke",
             ),
             (

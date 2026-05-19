@@ -190,10 +190,10 @@ async fn job_submit_with_unknown_agent_version_yields_error() {
     };
 
     // Submit echo@2.0.0 — version not advertised.
-    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
-        tool: "echo@2.0.0".into(),
-        arguments: serde_json::json!({}),
-    }));
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "echo@2.0.0",
+        serde_json::json!({}),
+    )));
     invoke.session_id = Some(session_id);
     client_t.send(invoke).await.expect("send invoke");
 
@@ -274,10 +274,10 @@ async fn session_list_jobs_returns_visible_jobs() {
     };
 
     // Submit one sleep job; drain job.accepted.
-    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
-        tool: "sleep".into(),
-        arguments: serde_json::json!({}),
-    }));
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "sleep",
+        serde_json::json!({}),
+    )));
     invoke.session_id = Some(session_id.clone());
     client_t.send(invoke).await.expect("send invoke");
     let _accepted = tokio::time::timeout(Duration::from_millis(300), client_t.recv())
@@ -377,10 +377,10 @@ async fn session_ack_unblocks_writer_when_window_exhausted() {
     // Submit an echo job. The runtime will try to emit job.accepted,
     // job.started, and job.completed — all countable. With window=1 the
     // first will flow, the rest will be parked until we ack.
-    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
-        tool: "echo".into(),
-        arguments: serde_json::json!({"hello": "world"}),
-    }));
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "echo",
+        serde_json::json!({"hello": "world"}),
+    )));
     invoke.session_id = Some(session_id.clone());
     client_t.send(invoke).await.expect("send invoke");
 

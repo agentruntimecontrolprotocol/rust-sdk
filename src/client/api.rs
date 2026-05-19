@@ -354,10 +354,9 @@ impl<T: Transport + 'static> Session<Authenticated, T> {
         arguments: serde_json::Value,
     ) -> Result<JobHandle, ARCPError> {
         let session_id = self.id().await?;
-        let mut env = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
-            tool: tool.into(),
-            arguments,
-        }));
+        let mut env = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+            tool, arguments,
+        )));
         env.session_id = Some(session_id);
         let correlation_id = env.id.clone();
 

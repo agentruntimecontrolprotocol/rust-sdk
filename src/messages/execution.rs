@@ -193,12 +193,30 @@ mod agent_ref_tests {
 }
 
 /// Payload for `tool.invoke`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolInvokePayload {
     /// Tool identifier.
     pub tool: String,
     /// Tool-specific arguments.
     pub arguments: serde_json::Value,
+    /// `cost.budget` lease capability for this job (ARCP v1.1 §9.6).
+    /// When present, the runtime tracks per-currency counters and
+    /// surfaces `BUDGET_EXHAUSTED` to the agent once any counter
+    /// reaches zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_budget: Option<crate::messages::permissions::CostBudget>,
+}
+
+impl ToolInvokePayload {
+    /// New `tool.invoke` payload with no budget.
+    #[must_use]
+    pub fn new(tool: impl Into<String>, arguments: serde_json::Value) -> Self {
+        Self {
+            tool: tool.into(),
+            arguments,
+            cost_budget: None,
+        }
+    }
 }
 
 /// Payload for `tool.result`.

@@ -92,10 +92,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[A] connected as submitter");
 
     // Submitter invokes a slow job.
-    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
-        tool: "timer".into(),
-        arguments: serde_json::json!({}),
-    }));
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "timer",
+        serde_json::json!({}),
+    )));
     invoke.session_id = Some(a_session.clone());
     a.send(invoke).await?;
     let accepted_env = a.recv().await?.ok_or("no job.accepted")?;

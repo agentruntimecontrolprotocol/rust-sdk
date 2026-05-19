@@ -775,6 +775,15 @@ impl ARCPRuntime {
         let jobs_clone = jobs.clone();
         let pending_human_clone = Arc::clone(pending_human);
         let cancel_for_task = cancel;
+        // ARCP v1.1 §9.6: seed the per-job budget tracker from the
+        // `cost_budget` field on `tool.invoke`. Absent / empty means
+        // budgeting is disabled for this job.
+        let budget_tracker = payload
+            .cost_budget
+            .as_ref()
+            .map_or_else(crate::runtime::context::BudgetTracker::new, |b| {
+                crate::runtime::context::BudgetTracker::from_budget(b)
+            });
 
         let join = tokio::spawn(async move {
             // job.started
@@ -794,6 +803,7 @@ impl ARCPRuntime {
                 correlation_id: correlation_id.clone(),
                 out: out_clone.clone(),
                 pending_human: pending_human_clone,
+                budget: budget_tracker,
             };
 
             let outcome = tokio::select! {

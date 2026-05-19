@@ -165,6 +165,7 @@ mod tests {
             correlation_id: crate::ids::MessageId::new(),
             out: tx,
             pending_human: Arc::new(dashmap::DashMap::new()),
+            budget: crate::runtime::context::BudgetTracker::new(),
         };
         let result = echo
             .invoke(serde_json::json!({"k": 1}), ctx)

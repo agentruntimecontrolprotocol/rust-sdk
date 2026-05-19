@@ -80,10 +80,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Submit one echo job. The runtime will try to emit
     // job.accepted -> job.started -> job.completed, all countable.
-    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
-        tool: "echo".into(),
-        arguments: serde_json::json!({"hello": "world"}),
-    }));
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "echo",
+        serde_json::json!({"hello": "world"}),
+    )));
     invoke.session_id = Some(session_id.clone());
     client_t.send(invoke).await?;
 

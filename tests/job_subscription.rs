@@ -98,10 +98,10 @@ async fn cross_session_subscribe_receives_terminal_event() {
     let (observer, obs_session) = open_session(&runtime, "observer", "token-A").await;
 
     // Submitter submits a long-ish job.
-    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
-        tool: "slow-echo".into(),
-        arguments: serde_json::json!({"hello": "world"}),
-    }));
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "slow-echo",
+        serde_json::json!({"hello": "world"}),
+    )));
     invoke.session_id = Some(sub_session.clone());
     submitter.send(invoke).await.expect("send invoke");
     let accepted = submitter.recv().await.expect("recv").expect("envelope");
@@ -200,10 +200,10 @@ async fn job_subscribe_denied_for_different_principal() {
     let (submitter, sub_session) = open_session(&runtime, "submitter", "token-A").await;
     let (observer, obs_session) = open_session(&runtime, "observer", "token-B").await;
 
-    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
-        tool: "slow-echo".into(),
-        arguments: serde_json::json!({}),
-    }));
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "slow-echo",
+        serde_json::json!({}),
+    )));
     invoke.session_id = Some(sub_session.clone());
     submitter.send(invoke).await.expect("send");
     let accepted = submitter.recv().await.expect("recv").expect("envelope");
@@ -246,10 +246,10 @@ async fn job_unsubscribe_stops_forwarding() {
     let (submitter, sub_session) = open_session(&runtime, "submitter", "t").await;
     let (observer, obs_session) = open_session(&runtime, "observer", "t").await;
 
-    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
-        tool: "slow-echo".into(),
-        arguments: serde_json::json!({}),
-    }));
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "slow-echo",
+        serde_json::json!({}),
+    )));
     invoke.session_id = Some(sub_session.clone());
     submitter.send(invoke).await.expect("send");
     let accepted = submitter.recv().await.expect("recv").expect("envelope");

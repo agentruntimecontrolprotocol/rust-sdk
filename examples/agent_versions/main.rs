@@ -93,10 +93,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Pin to an existing version → should complete.
     {
-        let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
-            tool: "echo@1.0.0".into(),
-            arguments: serde_json::json!({"msg": "hello"}),
-        }));
+        let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+            "echo@1.0.0",
+            serde_json::json!({"msg": "hello"}),
+        )));
         invoke.session_id = Some(session_id.clone());
         client_t.send(invoke).await?;
         loop {
@@ -118,10 +118,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Pin to a missing version → should surface AGENT_VERSION_NOT_AVAILABLE.
     {
-        let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
-            tool: "echo@9.9.9".into(),
-            arguments: serde_json::json!({"msg": "hello"}),
-        }));
+        let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+            "echo@9.9.9",
+            serde_json::json!({"msg": "hello"}),
+        )));
         invoke.session_id = Some(session_id);
         client_t.send(invoke).await?;
         loop {

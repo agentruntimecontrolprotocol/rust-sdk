@@ -146,6 +146,10 @@ path = "examples/job_subscribe/main.rs"
 name = "result_chunk"
 path = "examples/result_chunk/main.rs"
 
+[[example]]
+name = "cost_budget"
+path = "examples/cost_budget/main.rs"
+
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "deny"

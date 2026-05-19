@@ -100,10 +100,10 @@ async fn result_chunk_stream_and_completed_with_result_id() {
     };
     let session_id = payload.session_id;
 
-    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
-        tool: "report-builder".into(),
-        arguments: serde_json::json!({}),
-    }));
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "report-builder",
+        serde_json::json!({}),
+    )));
     invoke.session_id = Some(session_id.clone());
     client_t.send(invoke).await.expect("send");
 

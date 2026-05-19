@@ -104,10 +104,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session_id = payload.session_id;
     println!("connected; session_id={session_id}");
 
-    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
-        tool: "report-builder".into(),
-        arguments: serde_json::json!({"chunks": 5}),
-    }));
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "report-builder",
+        serde_json::json!({"chunks": 5}),
+    )));
     invoke.session_id = Some(session_id);
     client_t.send(invoke).await?;
 
