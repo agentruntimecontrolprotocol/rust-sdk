@@ -16,7 +16,7 @@ use arcp::auth::BearerAuthenticator;
 use arcp::envelope::Envelope;
 use arcp::messages::{
     AuthScheme, CancelPayload, CancelTargetKind, Capabilities, ClientIdentity, Credentials,
-    MessageType, PingPayload,
+    MessageType, PingPayload, SessionPingPayload,
 };
 use arcp::runtime::ARCPRuntime;
 use arcp::transport::{paired, Transport};
@@ -117,6 +117,65 @@ async fn ping_dispatched_to_pong_after_handshake() {
         .expect("recv")
         .expect("present");
     assert!(matches!(pong.payload, MessageType::Pong(_)));
+    assert_eq!(pong.correlation_id.as_ref(), Some(&ping_id));
+}
+
+/// ARCP v1.1 §6.4 — `session.ping` from the client must be answered with
+/// `session.pong` echoing the nonce as `ping_nonce`.
+#[tokio::test]
+async fn session_ping_dispatched_to_session_pong() {
+    let runtime = ARCPRuntime::builder()
+        .with_authenticator(Box::new(BearerAuthenticator::new().with_token("t", "p")))
+        .build()
+        .await
+        .expect("build");
+    let (server_t, client_t) = paired();
+    let _h = runtime.serve_connection(server_t);
+
+    let open_id = arcp::ids::MessageId::new();
+    let mut open = Envelope::new(MessageType::SessionOpen(
+        arcp::messages::SessionOpenPayload {
+            auth: Credentials {
+                scheme: AuthScheme::Bearer,
+                token: Some("t".into()),
+            },
+            client: ClientIdentity {
+                kind: "test".into(),
+                version: "0".into(),
+                fingerprint: None,
+                principal: None,
+            },
+            capabilities: Capabilities::default(),
+        },
+    ));
+    open.id = open_id.clone();
+    client_t.send(open).await.expect("send open");
+    let accept = client_t.recv().await.expect("recv").expect("present");
+    let session_id = match accept.payload {
+        MessageType::SessionAccepted(p) => p.session_id,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+
+    let nonce = "p_01J".to_owned();
+    let mut ping = Envelope::new(MessageType::SessionPing(SessionPingPayload {
+        nonce: nonce.clone(),
+        sent_at: chrono::Utc::now(),
+    }));
+    ping.session_id = Some(session_id);
+    let ping_id = ping.id.clone();
+    client_t.send(ping).await.expect("send session.ping");
+
+    let pong = tokio::time::timeout(Duration::from_millis(200), client_t.recv())
+        .await
+        .expect("timely")
+        .expect("recv")
+        .expect("present");
+    match pong.payload {
+        MessageType::SessionPong(p) => {
+            assert_eq!(p.ping_nonce, nonce);
+        }
+        other => panic!("expected session.pong, got {other:?}"),
+    }
     assert_eq!(pong.correlation_id.as_ref(), Some(&ping_id));
 }
 

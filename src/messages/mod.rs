@@ -50,8 +50,9 @@ pub use permissions::{
 pub use session::{
     AuthScheme, ClientIdentity, Credentials, RuntimeIdentity, SessionAcceptedPayload,
     SessionAuthenticatePayload, SessionChallengePayload, SessionClosePayload,
-    SessionEvictedPayload, SessionLease, SessionOpenPayload, SessionRefreshPayload,
-    SessionRejectedPayload, SessionUnauthenticatedPayload,
+    SessionEvictedPayload, SessionLease, SessionOpenPayload, SessionPingPayload,
+    SessionPongPayload, SessionRefreshPayload, SessionRejectedPayload,
+    SessionUnauthenticatedPayload,
 };
 pub use streaming::{
     StreamChunkPayload, StreamClosePayload, StreamErrorPayload, StreamKind, StreamOpenPayload,
@@ -210,6 +211,16 @@ pub enum MessageType {
     /// `session.close`
     #[serde(rename = "session.close")]
     SessionClose(SessionClosePayload),
+    /// `session.ping` (ARCP v1.1 §6.4) — session-scoped heartbeat.
+    ///
+    /// Canonical heartbeat per ARCP v1.1; the generic `Ping`/`Pong`
+    /// variants below were introduced under v1.0's draft scaffolding and
+    /// remain only for backwards compatibility.
+    #[serde(rename = "session.ping")]
+    SessionPing(SessionPingPayload),
+    /// `session.pong` (ARCP v1.1 §6.4) — response to `session.ping`.
+    #[serde(rename = "session.pong")]
+    SessionPong(SessionPongPayload),
 
     // Control
     /// `ping`
@@ -389,6 +400,8 @@ impl MessageType {
             Self::SessionRefresh(_) => "session.refresh",
             Self::SessionEvicted(_) => "session.evicted",
             Self::SessionClose(_) => "session.close",
+            Self::SessionPing(_) => "session.ping",
+            Self::SessionPong(_) => "session.pong",
             Self::Ping(_) => "ping",
             Self::Pong(_) => "pong",
             Self::Ack(_) => "ack",
@@ -576,6 +589,30 @@ mod tests {
     }
 
     #[test]
+    fn session_ping_round_trips_through_serde() {
+        let now = chrono::Utc::now();
+        let m = MessageType::SessionPing(SessionPingPayload {
+            nonce: "p_01J".into(),
+            sent_at: now,
+        });
+        let json = serde_json::to_string(&m).expect("serialize");
+        let back: MessageType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(m, back);
+    }
+
+    #[test]
+    fn session_pong_round_trips_through_serde() {
+        let now = chrono::Utc::now();
+        let m = MessageType::SessionPong(SessionPongPayload {
+            ping_nonce: "p_01J".into(),
+            received_at: now,
+        });
+        let json = serde_json::to_string(&m).expect("serialize");
+        let back: MessageType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(m, back);
+    }
+
+    #[test]
     fn ping_wire_shape_matches_rfc() {
         let m = MessageType::Ping(PingPayload { nonce: None });
         let json = serde_json::to_value(&m).expect("serialize");
@@ -743,6 +780,20 @@ mod tests {
             (
                 MessageType::SessionClose(SessionClosePayload::default()),
                 "session.close",
+            ),
+            (
+                MessageType::SessionPing(SessionPingPayload {
+                    nonce: "n".into(),
+                    sent_at: now,
+                }),
+                "session.ping",
+            ),
+            (
+                MessageType::SessionPong(SessionPongPayload {
+                    ping_nonce: "n".into(),
+                    received_at: now,
+                }),
+                "session.pong",
             ),
             (MessageType::Ping(PingPayload::default()), "ping"),
             (MessageType::Pong(PongPayload::default()), "pong"),
@@ -1091,8 +1142,8 @@ mod tests {
         for (msg, expected) in &cases {
             assert_eq!(msg.type_name(), *expected);
         }
-        // 58 message variants — sanity-check we built exactly that many.
+        // 60 message variants — sanity-check we built exactly that many.
         // Bump this when MessageType grows in v0.2.
-        assert_eq!(cases.len(), 58);
+        assert_eq!(cases.len(), 60);
     }
 }

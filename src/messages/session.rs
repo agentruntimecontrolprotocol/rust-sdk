@@ -155,3 +155,25 @@ pub struct SessionClosePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
+
+/// Payload for `session.ping` (ARCP v1.1 §6.4).
+///
+/// Either peer MAY emit `session.ping` if idle and expect a prompt
+/// `session.pong` echoing the same `nonce`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPingPayload {
+    /// Opaque nonce; the corresponding `session.pong` echoes it as
+    /// `ping_nonce`.
+    pub nonce: String,
+    /// Sender timestamp (RFC 3339).
+    pub sent_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Payload for `session.pong` (ARCP v1.1 §6.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPongPayload {
+    /// Echoed `nonce` from the inciting `session.ping`.
+    pub ping_nonce: String,
+    /// Receiver timestamp (RFC 3339).
+    pub received_at: chrono::DateTime<chrono::Utc>,
+}

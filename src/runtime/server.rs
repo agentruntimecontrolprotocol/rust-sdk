@@ -352,6 +352,26 @@ impl ARCPRuntime {
                     }
                     let _ = out_tx.send(env).await;
                 }
+                MessageType::SessionPing(payload) => {
+                    // ARCP v1.1 §6.4: echo the nonce as `ping_nonce` in
+                    // `session.pong` and stamp `received_at`.
+                    let mut env = Envelope::new(MessageType::SessionPong(
+                        crate::messages::SessionPongPayload {
+                            ping_nonce: payload.nonce,
+                            received_at: chrono::Utc::now(),
+                        },
+                    ));
+                    env.correlation_id = Some(envelope.id.clone());
+                    if let Some(s) = state.as_ref() {
+                        env.session_id = Some(s.session_id.clone());
+                    }
+                    let _ = out_tx.send(env).await;
+                }
+                MessageType::SessionPong(_) => {
+                    // Heartbeat replies are observed by the client driver
+                    // (see `client::heartbeat`); the runtime treats them as
+                    // liveness evidence implicitly via transport.recv().
+                }
                 MessageType::Subscribe(payload) => {
                     if let Some(s) = state.as_ref() {
                         Self::handle_subscribe(

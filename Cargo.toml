@@ -121,6 +121,10 @@ path = "examples/human_input/main.rs"
 name = "mcp"
 path = "examples/mcp/main.rs"
 
+[[example]]
+name = "session_heartbeat"
+path = "examples/session_heartbeat/main.rs"
+
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "deny"
