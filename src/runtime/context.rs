@@ -75,11 +75,7 @@ impl BudgetTracker {
     /// True when no currencies are tracked (i.e. budgeting is disabled).
     #[must_use]
     pub fn is_disabled(&self) -> bool {
-        self.inner
-            .state
-            .lock()
-            .map(|s| s.is_empty())
-            .unwrap_or(true)
+        self.inner.state.lock().map_or(true, |s| s.is_empty())
     }
 
     /// Remaining budget for `currency`, if tracked. `None` means the
