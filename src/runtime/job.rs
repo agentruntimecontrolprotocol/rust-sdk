@@ -134,11 +134,6 @@ impl JobRegistry {
         self.inner.retain(|_, r| !r.entry.state.is_terminal());
     }
 
-    /// Iterate the cancellation tokens of all in-flight jobs.
-    pub(crate) fn inner_iter(&self) -> Vec<CancellationToken> {
-        self.inner.iter().map(|r| r.entry.cancel.clone()).collect()
-    }
-
     /// Snapshot of all jobs scoped to `session_id`, applying an optional
     /// filter (ARCP v1.1 §6.6). Results are sorted by `created_at`
     /// ascending so pagination cursors are stable.
@@ -157,7 +152,7 @@ impl JobRegistry {
                     return None;
                 }
                 if let Some(f) = filter {
-                    let status = job_state_str(e.state);
+                    let status = e.state.wire_str();
                     if !f.status.is_empty() && !f.status.iter().any(|s| s == status) {
                         return None;
                     }
@@ -180,7 +175,7 @@ impl JobRegistry {
                 Some(crate::messages::JobListEntry {
                     job_id: e.job_id.clone(),
                     agent: e.agent.clone(),
-                    status: job_state_str(e.state).to_owned(),
+                    status: e.state.wire_str().to_owned(),
                     parent_job_id: e.parent_job_id.clone(),
                     created_at: e.created_at,
                     trace_id: None,
@@ -202,20 +197,42 @@ impl JobRegistry {
             r.entry.last_event_seq
         })
     }
+
+    /// Snapshot the public-facing fields of a job, if registered.
+    ///
+    /// Used by `job.subscribe` (ARCP v1.1 §7.6) to populate the
+    /// acknowledgement.
+    #[must_use]
+    pub fn snapshot(&self, job_id: &JobId) -> Option<JobSnapshot> {
+        self.inner.get(job_id).map(|r| {
+            let e = &r.entry;
+            JobSnapshot {
+                job_id: e.job_id.clone(),
+                session_id: e.session_id.clone(),
+                state: e.state,
+                agent: e.agent.clone(),
+                parent_job_id: e.parent_job_id.clone(),
+                last_event_seq: e.last_event_seq,
+            }
+        })
+    }
 }
 
-/// Wire-level string for [`JobState`] per ARCP §10.2.
-const fn job_state_str(state: JobState) -> &'static str {
-    match state {
-        JobState::Accepted => "accepted",
-        JobState::Queued => "queued",
-        JobState::Running => "running",
-        JobState::Blocked => "blocked",
-        JobState::Paused => "paused",
-        JobState::Completed => "completed",
-        JobState::Failed => "failed",
-        JobState::Cancelled => "cancelled",
-    }
+/// Public projection of [`JobEntry`] returned by [`JobRegistry::snapshot`].
+#[derive(Debug, Clone)]
+pub struct JobSnapshot {
+    /// Job identifier.
+    pub job_id: JobId,
+    /// Originating session.
+    pub session_id: SessionId,
+    /// Current state.
+    pub state: JobState,
+    /// Agent reference (`name` or `name@version`) the job is running.
+    pub agent: String,
+    /// Parent job id for delegated / child jobs.
+    pub parent_job_id: Option<JobId>,
+    /// Highest event sequence emitted for this job.
+    pub last_event_seq: u64,
 }
 
 #[cfg(test)]

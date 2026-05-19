@@ -138,6 +138,10 @@ path = "examples/session_list_jobs/main.rs"
 name = "agent_versions"
 path = "examples/agent_versions/main.rs"
 
+[[example]]
+name = "job_subscribe"
+path = "examples/job_subscribe/main.rs"
+
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "deny"

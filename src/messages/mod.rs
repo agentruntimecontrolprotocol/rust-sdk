@@ -59,8 +59,9 @@ pub use streaming::{
     StreamChunkPayload, StreamClosePayload, StreamErrorPayload, StreamKind, StreamOpenPayload,
 };
 pub use subscriptions::{
-    SubscribeAcceptedPayload, SubscribeClosedPayload, SubscribeEventPayload, SubscribePayload,
-    SubscriptionFilter, SubscriptionSince, UnsubscribePayload,
+    JobSubscribePayload, JobSubscribedPayload, JobUnsubscribePayload, SubscribeAcceptedPayload,
+    SubscribeClosedPayload, SubscribeEventPayload, SubscribePayload, SubscriptionFilter,
+    SubscriptionSince, UnsubscribePayload,
 };
 pub use telemetry::TraceSpanPayload;
 
@@ -441,6 +442,18 @@ pub enum MessageType {
     /// `subscribe.closed`
     #[serde(rename = "subscribe.closed")]
     SubscribeClosed(SubscribeClosedPayload),
+    /// `job.subscribe` (ARCP v1.1 §7.6) — cross-session attach to a
+    /// running job.
+    #[serde(rename = "job.subscribe")]
+    JobSubscribe(JobSubscribePayload),
+    /// `job.subscribed` (ARCP v1.1 §7.6) — runtime acknowledgement of a
+    /// `job.subscribe` request.
+    #[serde(rename = "job.subscribed")]
+    JobSubscribed(JobSubscribedPayload),
+    /// `job.unsubscribe` (ARCP v1.1 §7.6) — terminate a previously
+    /// acknowledged job subscription.
+    #[serde(rename = "job.unsubscribe")]
+    JobUnsubscribe(JobUnsubscribePayload),
 
     // Artifacts
     /// `artifact.put`
@@ -531,6 +544,9 @@ impl MessageType {
             Self::SubscribeEvent(_) => "subscribe.event",
             Self::Unsubscribe(_) => "unsubscribe",
             Self::SubscribeClosed(_) => "subscribe.closed",
+            Self::JobSubscribe(_) => "job.subscribe",
+            Self::JobSubscribed(_) => "job.subscribed",
+            Self::JobUnsubscribe(_) => "job.unsubscribe",
             Self::ArtifactPut(_) => "artifact.put",
             Self::ArtifactFetch(_) => "artifact.fetch",
             Self::ArtifactRef(_) => "artifact.ref",
@@ -1344,6 +1360,32 @@ mod tests {
                 "subscribe.closed",
             ),
             (
+                MessageType::JobSubscribe(JobSubscribePayload {
+                    job_id: crate::ids::JobId::new(),
+                    from_event_seq: None,
+                    history: false,
+                }),
+                "job.subscribe",
+            ),
+            (
+                MessageType::JobSubscribed(JobSubscribedPayload {
+                    job_id: crate::ids::JobId::new(),
+                    current_status: "running".into(),
+                    agent: "echo".into(),
+                    parent_job_id: None,
+                    trace_id: None,
+                    subscribed_from: 0,
+                    replayed: false,
+                }),
+                "job.subscribed",
+            ),
+            (
+                MessageType::JobUnsubscribe(JobUnsubscribePayload {
+                    job_id: crate::ids::JobId::new(),
+                }),
+                "job.unsubscribe",
+            ),
+            (
                 MessageType::ArtifactPut(ArtifactPutPayload {
                     media_type: "x".into(),
                     data: String::new(),
@@ -1417,8 +1459,8 @@ mod tests {
         for (msg, expected) in &cases {
             assert_eq!(msg.type_name(), *expected);
         }
-        // 63 message variants — sanity-check we built exactly that many.
+        // 66 message variants — sanity-check we built exactly that many.
         // Bump this when MessageType grows in v0.2.
-        assert_eq!(cases.len(), 63);
+        assert_eq!(cases.len(), 66);
     }
 }

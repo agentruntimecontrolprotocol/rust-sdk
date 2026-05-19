@@ -26,10 +26,11 @@ use crate::messages::{
     ArtifactFetchPayload, ArtifactPutPayload, ArtifactRefPayload, ArtifactReleasePayload,
     CancelPayload, CancelTargetKind, Capabilities, HumanChoiceResponsePayload,
     HumanInputCancelledPayload, HumanInputResponsePayload, JobAcceptedPayload, JobCancelledPayload,
-    JobCompletedPayload, JobFailedPayload, JobStartedPayload, JobState, MessageType, NackPayload,
-    RuntimeIdentity, SessionAcceptedPayload, SessionLease, SessionOpenPayload,
-    SessionRejectedPayload, SessionUnauthenticatedPayload, SubscribeAcceptedPayload,
-    SubscribeEventPayload, SubscribePayload, ToolInvokePayload, UnsubscribePayload,
+    JobCompletedPayload, JobFailedPayload, JobStartedPayload, JobState, JobSubscribePayload,
+    JobSubscribedPayload, JobUnsubscribePayload, MessageType, NackPayload, RuntimeIdentity,
+    SessionAcceptedPayload, SessionLease, SessionOpenPayload, SessionRejectedPayload,
+    SessionUnauthenticatedPayload, SubscribeAcceptedPayload, SubscribeEventPayload,
+    SubscribePayload, ToolInvokePayload, UnsubscribePayload,
 };
 use crate::store::eventlog::EventLog;
 use crate::transport::Transport;
@@ -149,6 +150,8 @@ impl RuntimeBuilder {
                 event_log,
                 artifacts: ArtifactStore::new(),
                 subscriptions: SubscriptionManager::new(),
+                jobs: JobRegistry::new(),
+                session_principals: DashMap::new(),
             }),
         })
     }
@@ -168,6 +171,13 @@ struct RuntimeInner {
     event_log: EventLog,
     artifacts: ArtifactStore,
     subscriptions: SubscriptionManager,
+    /// Runtime-wide job registry. Shared across connections so a
+    /// `job.subscribe` (ARCP v1.1 §7.6) from a different session can
+    /// observe jobs submitted elsewhere.
+    jobs: JobRegistry,
+    /// Per-session authenticated principal. Used by `job.subscribe`
+    /// authorization (default policy: same-principal as the submitter).
+    session_principals: DashMap<SessionId, Option<String>>,
 }
 
 /// The ARCP runtime. Cheap to clone; share across tasks.
@@ -289,13 +299,16 @@ impl ARCPRuntime {
         });
 
         let connection_token = CancellationToken::new();
-        let jobs = JobRegistry::new();
+        let jobs = self.inner.jobs.clone();
         let pending_human: Arc<DashMap<MessageId, oneshot::Sender<HumanResponse>>> =
             Arc::new(DashMap::new());
         // Subscriptions owned by this connection, so we can drop them on
         // close even if the SubscriptionManager is shared across sessions.
         let connection_subs: Arc<DashMap<SubscriptionId, JoinHandle<()>>> =
             Arc::new(DashMap::new());
+        // Per-connection `job.subscribe` (ARCP v1.1 §7.6) forwarders,
+        // keyed by `job_id`.
+        let connection_job_subs: Arc<DashMap<JobId, JoinHandle<()>>> = Arc::new(DashMap::new());
         let mut state: Option<SessionState> = None;
         let mut seen_ids: HashSet<MessageId> = HashSet::new();
 
@@ -467,6 +480,27 @@ impl ARCPRuntime {
                     }
                     let _ = self.inner.subscriptions.unsubscribe(&subscription_id);
                 }
+                MessageType::JobSubscribe(payload) => {
+                    if let Some(s) = state.as_ref() {
+                        Self::handle_job_subscribe(
+                            &out_tx,
+                            &self.inner.subscriptions,
+                            &self.inner.jobs,
+                            &self.inner.session_principals,
+                            &connection_job_subs,
+                            envelope.id.clone(),
+                            s.session_id.clone(),
+                            s.principal.clone(),
+                            payload,
+                        )
+                        .await;
+                    }
+                }
+                MessageType::JobUnsubscribe(JobUnsubscribePayload { job_id }) => {
+                    if let Some((_, join)) = connection_job_subs.remove(&job_id) {
+                        join.abort();
+                    }
+                }
                 MessageType::ArtifactPut(payload) => {
                     if let Some(s) = state.as_ref() {
                         Self::handle_artifact_put(
@@ -509,17 +543,24 @@ impl ARCPRuntime {
             }
         };
 
-        // Tear down: cancel all jobs, abort all subscription forwarder
-        // tasks, drop the out_tx so the writer drains remaining envelopes,
-        // then await the writer.
+        // Tear down: cancel jobs owned by this session, abort all
+        // subscription forwarder tasks, drop the out_tx so the writer
+        // drains remaining envelopes, then await the writer.
         connection_token.cancel();
-        for r in jobs.inner_iter() {
-            r.cancel();
+        if let Some(s) = state.as_ref() {
+            for snap in jobs.list_for_session(&s.session_id, None) {
+                let _ = jobs.cancel(&snap.job_id);
+            }
+            self.inner.session_principals.remove(&s.session_id);
         }
         for entry in connection_subs.iter() {
             entry.value().abort();
         }
         connection_subs.clear();
+        for entry in connection_job_subs.iter() {
+            entry.value().abort();
+        }
+        connection_job_subs.clear();
         drop(out_tx);
         // Wake the writer if it's currently parked on the ack window so
         // it can observe the closed channel and exit.
@@ -562,6 +603,9 @@ impl ARCPRuntime {
 
         match outcome {
             AuthOutcome::Accept { principal } => {
+                self.inner
+                    .session_principals
+                    .insert(session_id.clone(), Some(principal.clone()));
                 state.principal = Some(principal);
                 state.phase = HandshakePhase::Accepted;
                 self.send_accepted(out, correlation_id, &session_id, &negotiated)
@@ -611,6 +655,9 @@ impl ARCPRuntime {
                 .await?;
             match outcome {
                 AuthOutcome::Accept { principal } => {
+                    self.inner
+                        .session_principals
+                        .insert(state.session_id.clone(), Some(principal.clone()));
                     state.principal = Some(principal);
                     state.phase = HandshakePhase::Accepted;
                     state.active_challenge = None;
@@ -951,6 +998,114 @@ impl ARCPRuntime {
         connection_subs.insert(subscription_id, join);
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_job_subscribe(
+        out: &mpsc::Sender<Envelope>,
+        manager: &SubscriptionManager,
+        jobs: &JobRegistry,
+        session_principals: &DashMap<SessionId, Option<String>>,
+        connection_job_subs: &Arc<DashMap<JobId, JoinHandle<()>>>,
+        correlation_id: MessageId,
+        subscriber_session: SessionId,
+        subscriber_principal: Option<String>,
+        payload: JobSubscribePayload,
+    ) {
+        let JobSubscribePayload {
+            job_id,
+            from_event_seq: _,
+            history: _,
+        } = payload;
+
+        let Some(snap) = jobs.snapshot(&job_id) else {
+            let mut err = Envelope::new(MessageType::Nack(NackPayload {
+                code: ErrorCode::NotFound,
+                message: format!("no such job: {job_id}"),
+                details: None,
+            }));
+            err.correlation_id = Some(correlation_id);
+            err.session_id = Some(subscriber_session);
+            let _ = out.send(err).await;
+            return;
+        };
+
+        // Authorization (§7.6): subscribing session's principal must
+        // match the submitter's principal. The submitter is always
+        // permitted (same session_id).
+        if snap.session_id != subscriber_session {
+            let submitter_principal = session_principals
+                .get(&snap.session_id)
+                .and_then(|p| p.value().clone());
+            let permitted = match (&submitter_principal, &subscriber_principal) {
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            };
+            if !permitted {
+                let mut err = Envelope::new(MessageType::Nack(NackPayload {
+                    code: ErrorCode::PermissionDenied,
+                    message: "principal not authorized to subscribe to this job".into(),
+                    details: None,
+                }));
+                err.correlation_id = Some(correlation_id);
+                err.session_id = Some(subscriber_session);
+                err.job_id = Some(job_id);
+                let _ = out.send(err).await;
+                return;
+            }
+        }
+
+        // Build a filter that selects only this job's envelopes.
+        let filter = crate::messages::SubscriptionFilter {
+            job_id: vec![job_id.clone()],
+            ..crate::messages::SubscriptionFilter::default()
+        };
+        let (_internal_id, mut rx) = manager.register(filter, subscriber_session.clone());
+
+        // Acknowledge.
+        let ack = JobSubscribedPayload {
+            job_id: job_id.clone(),
+            current_status: snap.state.wire_str().to_owned(),
+            agent: snap.agent.clone(),
+            parent_job_id: snap.parent_job_id.clone(),
+            trace_id: None,
+            subscribed_from: snap.last_event_seq,
+            // History replay is not yet implemented in this SDK; the ack
+            // always carries `replayed: false`, matching live-only
+            // semantics (§7.6 permits `history: false`).
+            replayed: false,
+        };
+        let mut ack_env = Envelope::new(MessageType::JobSubscribed(ack));
+        ack_env.correlation_id = Some(correlation_id);
+        ack_env.session_id = Some(subscriber_session.clone());
+        ack_env.job_id = Some(job_id.clone());
+        let _ = out.send(ack_env).await;
+
+        // Spawn forwarder: rewrites session_id to the subscriber's so
+        // client-side parsers route correctly. The originating session's
+        // own writer is responsible for the submitter's copy; here we
+        // only fan out a clone to the subscriber.
+        let out_clone = out.clone();
+        let subscriber_session_clone = subscriber_session;
+        let job_id_clone = job_id.clone();
+        let connection_job_subs_clone = Arc::clone(connection_job_subs);
+        let join = tokio::spawn(async move {
+            while let Some(mut env) = rx.next().await {
+                // Only forward server-originated, job-scoped envelopes.
+                // Skip subscriber's own client-to-server messages (e.g.
+                // tool.invoke, cancel) which can appear on the bus.
+                if !is_forwardable_job_event(&env.payload) {
+                    continue;
+                }
+                env.session_id = Some(subscriber_session_clone.clone());
+                if out_clone.send(env).await.is_err() {
+                    break;
+                }
+            }
+            // Forwarder exited (job terminal or unsubscribe).
+            connection_job_subs_clone.remove(&job_id_clone);
+        });
+        connection_job_subs.insert(job_id, join);
+    }
+
     async fn handle_artifact_put(
         out: &mpsc::Sender<Envelope>,
         store: &ArtifactStore,
@@ -1010,6 +1165,32 @@ enum Outcome {
     Completed(serde_json::Value),
     Failed(ARCPError),
     Cancelled(String),
+}
+
+/// True when an envelope is a server-emitted job event suitable for
+/// `job.subscribe` forwarding (ARCP v1.1 §7.6). Filters out client-to-
+/// server commands that happen to carry `job_id` (e.g. `cancel`,
+/// `tool.invoke`).
+const fn is_forwardable_job_event(payload: &MessageType) -> bool {
+    matches!(
+        payload,
+        MessageType::JobAccepted(_)
+            | MessageType::JobStarted(_)
+            | MessageType::JobProgress(_)
+            | MessageType::JobHeartbeat(_)
+            | MessageType::JobCompleted(_)
+            | MessageType::JobFailed(_)
+            | MessageType::JobCancelled(_)
+            | MessageType::ToolResult(_)
+            | MessageType::ToolError(_)
+            | MessageType::Log(_)
+            | MessageType::Metric(_)
+            | MessageType::StreamOpen(_)
+            | MessageType::StreamChunk(_)
+            | MessageType::StreamClose(_)
+            | MessageType::StreamError(_)
+            | MessageType::ArtifactRef(_)
+    )
 }
 
 /// Intersect two boolean capability slots.
