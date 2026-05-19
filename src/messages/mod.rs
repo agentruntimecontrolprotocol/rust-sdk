@@ -48,11 +48,11 @@ pub use permissions::{
     PermissionDenyPayload, PermissionGrantPayload, PermissionRequestPayload, TrustLevel,
 };
 pub use session::{
-    AuthScheme, ClientIdentity, Credentials, RuntimeIdentity, SessionAcceptedPayload,
+    AuthScheme, ClientIdentity, Credentials, JobListEntry, RuntimeIdentity, SessionAcceptedPayload,
     SessionAckPayload, SessionAuthenticatePayload, SessionChallengePayload, SessionClosePayload,
-    SessionEvictedPayload, SessionLease, SessionOpenPayload, SessionPingPayload,
-    SessionPongPayload, SessionRefreshPayload, SessionRejectedPayload,
-    SessionUnauthenticatedPayload,
+    SessionEvictedPayload, SessionJobsPayload, SessionLease, SessionListJobsFilter,
+    SessionListJobsPayload, SessionOpenPayload, SessionPingPayload, SessionPongPayload,
+    SessionRefreshPayload, SessionRejectedPayload, SessionUnauthenticatedPayload,
 };
 pub use streaming::{
     StreamChunkPayload, StreamClosePayload, StreamErrorPayload, StreamKind, StreamOpenPayload,
@@ -224,6 +224,13 @@ pub enum MessageType {
     /// `session.ack` (ARCP v1.1 §6.5) — client-side flow-control ack.
     #[serde(rename = "session.ack")]
     SessionAck(SessionAckPayload),
+    /// `session.list_jobs` (ARCP v1.1 §6.6) — read-only job inventory
+    /// request.
+    #[serde(rename = "session.list_jobs")]
+    SessionListJobs(SessionListJobsPayload),
+    /// `session.jobs` (ARCP v1.1 §6.6) — response to `session.list_jobs`.
+    #[serde(rename = "session.jobs")]
+    SessionJobs(SessionJobsPayload),
 
     // Control
     /// `ping`
@@ -406,6 +413,8 @@ impl MessageType {
             Self::SessionPing(_) => "session.ping",
             Self::SessionPong(_) => "session.pong",
             Self::SessionAck(_) => "session.ack",
+            Self::SessionListJobs(_) => "session.list_jobs",
+            Self::SessionJobs(_) => "session.jobs",
             Self::Ping(_) => "ping",
             Self::Pong(_) => "pong",
             Self::Ack(_) => "ack",
@@ -495,6 +504,8 @@ impl MessageType {
                 | Self::SessionPing(_)
                 | Self::SessionPong(_)
                 | Self::SessionAck(_)
+                | Self::SessionListJobs(_)
+                | Self::SessionJobs(_)
                 | Self::Ping(_)
                 | Self::Pong(_)
         )
@@ -647,6 +658,44 @@ mod tests {
                 "payload": { "last_processed_seq": 1827 },
             })
         );
+    }
+
+    #[test]
+    fn session_list_jobs_round_trips_through_serde() {
+        let m = MessageType::SessionListJobs(SessionListJobsPayload {
+            filter: Some(SessionListJobsFilter {
+                status: vec!["running".into()],
+                agent: Some("echo".into()),
+                created_after: None,
+                created_before: None,
+            }),
+            limit: Some(50),
+            cursor: None,
+        });
+        let json = serde_json::to_string(&m).expect("serialize");
+        let back: MessageType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(m, back);
+    }
+
+    #[test]
+    fn session_jobs_round_trips_through_serde() {
+        let now = chrono::Utc::now();
+        let m = MessageType::SessionJobs(SessionJobsPayload {
+            request_id: "msg_x".into(),
+            jobs: vec![JobListEntry {
+                job_id: crate::ids::JobId::new(),
+                agent: "echo@1.0.0".into(),
+                status: "running".into(),
+                parent_job_id: None,
+                created_at: now,
+                trace_id: None,
+                last_event_seq: 0,
+            }],
+            next_cursor: None,
+        });
+        let json = serde_json::to_string(&m).expect("serialize");
+        let back: MessageType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(m, back);
     }
 
     #[test]
@@ -870,6 +919,18 @@ mod tests {
                     last_processed_seq: 0,
                 }),
                 "session.ack",
+            ),
+            (
+                MessageType::SessionListJobs(SessionListJobsPayload::default()),
+                "session.list_jobs",
+            ),
+            (
+                MessageType::SessionJobs(SessionJobsPayload {
+                    request_id: "r".into(),
+                    jobs: vec![],
+                    next_cursor: None,
+                }),
+                "session.jobs",
             ),
             (MessageType::Ping(PingPayload::default()), "ping"),
             (MessageType::Pong(PongPayload::default()), "pong"),
@@ -1218,8 +1279,8 @@ mod tests {
         for (msg, expected) in &cases {
             assert_eq!(msg.type_name(), *expected);
         }
-        // 61 message variants — sanity-check we built exactly that many.
+        // 63 message variants — sanity-check we built exactly that many.
         // Bump this when MessageType grows in v0.2.
-        assert_eq!(cases.len(), 61);
+        assert_eq!(cases.len(), 63);
     }
 }

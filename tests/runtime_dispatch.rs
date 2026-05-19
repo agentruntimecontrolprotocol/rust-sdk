@@ -16,7 +16,7 @@ use arcp::auth::BearerAuthenticator;
 use arcp::envelope::Envelope;
 use arcp::messages::{
     AuthScheme, CancelPayload, CancelTargetKind, Capabilities, ClientIdentity, Credentials,
-    MessageType, PingPayload, SessionAckPayload, SessionPingPayload,
+    MessageType, PingPayload, SessionAckPayload, SessionListJobsPayload, SessionPingPayload,
 };
 use arcp::runtime::ARCPRuntime;
 use arcp::transport::{paired, Transport};
@@ -118,6 +118,108 @@ async fn ping_dispatched_to_pong_after_handshake() {
         .expect("present");
     assert!(matches!(pong.payload, MessageType::Pong(_)));
     assert_eq!(pong.correlation_id.as_ref(), Some(&ping_id));
+}
+
+/// ARCP v1.1 §6.6 — `session.list_jobs` returns the jobs visible to
+/// the current session as a `session.jobs` envelope.
+#[tokio::test]
+async fn session_list_jobs_returns_visible_jobs() {
+    use arcp::error::ARCPError;
+    use arcp::messages::ToolInvokePayload;
+    use arcp::runtime::tools::{ToolHandler, ToolRegistryBuilder};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    struct SleepTool;
+    #[async_trait]
+    impl ToolHandler for SleepTool {
+        fn name(&self) -> &'static str {
+            "sleep"
+        }
+        async fn invoke(
+            &self,
+            _arguments: serde_json::Value,
+            ctx: arcp::runtime::context::ToolContext,
+        ) -> Result<serde_json::Value, ARCPError> {
+            tokio::select! {
+                () = ctx.cancel.cancelled() => Err(ARCPError::Cancelled { reason: "x".into() }),
+                () = tokio::time::sleep(Duration::from_secs(5)) => Ok(serde_json::json!(null)),
+            }
+        }
+    }
+
+    let tools = ToolRegistryBuilder::new().with(Arc::new(SleepTool)).build();
+    let runtime = ARCPRuntime::builder()
+        .with_authenticator(Box::new(BearerAuthenticator::new().with_token("t", "p")))
+        .with_tools(tools)
+        .build()
+        .await
+        .expect("build");
+    let (server_t, client_t) = paired();
+    let _h = runtime.serve_connection(server_t);
+
+    let mut open = Envelope::new(MessageType::SessionOpen(
+        arcp::messages::SessionOpenPayload {
+            auth: Credentials {
+                scheme: AuthScheme::Bearer,
+                token: Some("t".into()),
+            },
+            client: ClientIdentity {
+                kind: "test".into(),
+                version: "0".into(),
+                fingerprint: None,
+                principal: None,
+            },
+            capabilities: Capabilities::default(),
+        },
+    ));
+    open.id = arcp::ids::MessageId::new();
+    client_t.send(open).await.expect("send open");
+    let accept = client_t.recv().await.expect("recv").expect("present");
+    let session_id = match accept.payload {
+        MessageType::SessionAccepted(p) => p.session_id,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+
+    // Submit one sleep job; drain job.accepted.
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload {
+        tool: "sleep".into(),
+        arguments: serde_json::json!({}),
+    }));
+    invoke.session_id = Some(session_id.clone());
+    client_t.send(invoke).await.expect("send invoke");
+    let _accepted = tokio::time::timeout(Duration::from_millis(300), client_t.recv())
+        .await
+        .expect("timely")
+        .expect("recv")
+        .expect("present");
+
+    // Request listing.
+    let mut list = Envelope::new(MessageType::SessionListJobs(SessionListJobsPayload {
+        filter: None,
+        limit: None,
+        cursor: None,
+    }));
+    list.session_id = Some(session_id);
+    let list_id = list.id.clone();
+    client_t.send(list).await.expect("send list");
+
+    // The response may arrive after job.started; drain until we see it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let response = loop {
+        let env = tokio::time::timeout_at(deadline, client_t.recv())
+            .await
+            .expect("timely")
+            .expect("recv")
+            .expect("present");
+        if let MessageType::SessionJobs(p) = env.payload {
+            assert_eq!(env.correlation_id.as_ref(), Some(&list_id));
+            break p;
+        }
+    };
+    assert_eq!(response.jobs.len(), 1);
+    assert_eq!(response.jobs[0].agent, "sleep");
+    assert!(response.next_cursor.is_none());
 }
 
 /// ARCP v1.1 §6.5 — the runtime pauses sending countable events past

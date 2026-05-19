@@ -32,6 +32,15 @@ pub struct JobEntry {
     pub cancel: CancellationToken,
     /// Current state.
     pub state: JobState,
+    /// Agent reference (`name` or `name@version`) the job is running.
+    /// For v1.0-style `tool.invoke` submissions this is the tool name.
+    pub agent: String,
+    /// Submission timestamp.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Highest event sequence emitted for this job (ARCP v1.1 §6.6).
+    pub last_event_seq: u64,
+    /// Parent job id for delegated / child jobs.
+    pub parent_job_id: Option<JobId>,
 }
 
 /// Map of in-flight jobs, keyed by [`JobId`].
@@ -129,6 +138,84 @@ impl JobRegistry {
     pub(crate) fn inner_iter(&self) -> Vec<CancellationToken> {
         self.inner.iter().map(|r| r.entry.cancel.clone()).collect()
     }
+
+    /// Snapshot of all jobs scoped to `session_id`, applying an optional
+    /// filter (ARCP v1.1 §6.6). Results are sorted by `created_at`
+    /// ascending so pagination cursors are stable.
+    #[must_use]
+    pub fn list_for_session(
+        &self,
+        session_id: &SessionId,
+        filter: Option<&crate::messages::SessionListJobsFilter>,
+    ) -> Vec<crate::messages::JobListEntry> {
+        let mut out: Vec<crate::messages::JobListEntry> = self
+            .inner
+            .iter()
+            .filter_map(|r| {
+                let e = &r.entry;
+                if e.session_id != *session_id {
+                    return None;
+                }
+                if let Some(f) = filter {
+                    let status = job_state_str(e.state);
+                    if !f.status.is_empty() && !f.status.iter().any(|s| s == status) {
+                        return None;
+                    }
+                    if let Some(agent) = f.agent.as_deref() {
+                        if e.agent != agent {
+                            return None;
+                        }
+                    }
+                    if let Some(after) = f.created_after {
+                        if e.created_at <= after {
+                            return None;
+                        }
+                    }
+                    if let Some(before) = f.created_before {
+                        if e.created_at >= before {
+                            return None;
+                        }
+                    }
+                }
+                Some(crate::messages::JobListEntry {
+                    job_id: e.job_id.clone(),
+                    agent: e.agent.clone(),
+                    status: job_state_str(e.state).to_owned(),
+                    parent_job_id: e.parent_job_id.clone(),
+                    created_at: e.created_at,
+                    trace_id: None,
+                    last_event_seq: e.last_event_seq,
+                })
+            })
+            .collect();
+        out.sort_by_key(|e| e.created_at);
+        out
+    }
+
+    /// Increment and return the new `last_event_seq` for `job_id`.
+    ///
+    /// Returns `None` if the job is not registered.
+    #[must_use]
+    pub fn bump_event_seq(&self, job_id: &JobId) -> Option<u64> {
+        self.inner.get_mut(job_id).map(|mut r| {
+            r.entry.last_event_seq += 1;
+            r.entry.last_event_seq
+        })
+    }
+}
+
+/// Wire-level string for [`JobState`] per ARCP §10.2.
+const fn job_state_str(state: JobState) -> &'static str {
+    match state {
+        JobState::Accepted => "accepted",
+        JobState::Queued => "queued",
+        JobState::Running => "running",
+        JobState::Blocked => "blocked",
+        JobState::Paused => "paused",
+        JobState::Completed => "completed",
+        JobState::Failed => "failed",
+        JobState::Cancelled => "cancelled",
+    }
 }
 
 #[cfg(test)]
@@ -150,6 +237,10 @@ mod tests {
             correlation_id: MessageId::new(),
             cancel,
             state,
+            agent: "test-tool".to_owned(),
+            created_at: chrono::Utc::now(),
+            last_event_seq: 0,
+            parent_job_id: None,
         };
         // A no-op task so the JoinHandle is well-formed.
         let join = tokio::spawn(async {});

@@ -189,3 +189,68 @@ pub struct SessionAckPayload {
     /// Highest event sequence the client has processed.
     pub last_processed_seq: u64,
 }
+
+/// Optional filter for `session.list_jobs` (ARCP v1.1 §6.6).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionListJobsFilter {
+    /// Match jobs whose current status is one of these values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub status: Vec<String>,
+    /// Match jobs whose agent identifier (or `agent@version`) equals
+    /// this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Match jobs created strictly after this instant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_after: Option<chrono::DateTime<chrono::Utc>>,
+    /// Match jobs created strictly before this instant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_before: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Payload for `session.list_jobs` (ARCP v1.1 §6.6).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionListJobsPayload {
+    /// Optional filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<SessionListJobsFilter>,
+    /// Maximum number of entries to return.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    /// Opaque pagination cursor returned by a previous response's
+    /// `next_cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// One entry in `session.jobs.payload.jobs` (ARCP v1.1 §6.6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobListEntry {
+    /// Job identifier.
+    pub job_id: crate::ids::JobId,
+    /// Resolved `name@version` (or bare `name` if no version was pinned).
+    pub agent: String,
+    /// Current status (e.g. `running`, `completed`).
+    pub status: String,
+    /// Optional parent job id for delegated/child jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_job_id: Option<crate::ids::JobId>,
+    /// Job submission timestamp.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Optional trace identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    /// Last event sequence emitted for the job in this session.
+    pub last_event_seq: u64,
+}
+
+/// Payload for `session.jobs` (ARCP v1.1 §6.6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionJobsPayload {
+    /// Correlated request id from the matching `session.list_jobs`.
+    pub request_id: String,
+    /// Job summaries.
+    pub jobs: Vec<JobListEntry>,
+    /// Opaque continuation cursor; `None` if there are no further pages.
+    pub next_cursor: Option<String>,
+}

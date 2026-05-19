@@ -428,6 +428,26 @@ impl ARCPRuntime {
                         ack_notify.notify_waiters();
                     }
                 }
+                MessageType::SessionListJobs(payload) => {
+                    // ARCP v1.1 §6.6: read-only job inventory scoped to
+                    // the current session's principal. The Rust SDK
+                    // scopes by session_id; cross-session listing is a
+                    // deployment-policy extension.
+                    if let Some(s) = state.as_ref() {
+                        let jobs_list =
+                            jobs.list_for_session(&s.session_id, payload.filter.as_ref());
+                        let response =
+                            MessageType::SessionJobs(crate::messages::SessionJobsPayload {
+                                request_id: envelope.id.to_string(),
+                                jobs: jobs_list,
+                                next_cursor: None,
+                            });
+                        let mut env = Envelope::new(response);
+                        env.correlation_id = Some(envelope.id.clone());
+                        env.session_id = Some(s.session_id.clone());
+                        let _ = out_tx.send(env).await;
+                    }
+                }
                 MessageType::Subscribe(payload) => {
                     if let Some(s) = state.as_ref() {
                         Self::handle_subscribe(
@@ -656,6 +676,10 @@ impl ARCPRuntime {
             correlation_id: correlation_id.clone(),
             cancel: cancel.clone(),
             state: JobState::Accepted,
+            agent: payload.tool.clone(),
+            created_at: chrono::Utc::now(),
+            last_event_seq: 0,
+            parent_job_id: None,
         };
 
         let out_clone = out.clone();
