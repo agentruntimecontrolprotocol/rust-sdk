@@ -1,6 +1,6 @@
 # arcp
 
-Rust reference implementation of the **Agent Runtime Control Protocol (ARCP)** v1.0.
+Rust reference implementation of the **Agent Runtime Control Protocol (ARCP)** v1.1.
 
 The protocol is defined in [`RFC-0001-v2.md`](./RFC-0001-v2.md), which ships
 inside the crate. The crate's job is to make that document executable.

@@ -1,6 +1,6 @@
 //! # arcp — Agent Runtime Control Protocol (reference implementation)
 //!
-//! This crate is a Rust reference implementation of [ARCP v1.0][rfc], the
+//! This crate is a Rust reference implementation of [ARCP v1.1][rfc], the
 //! Agent Runtime Control Protocol. The crate is being built in hard-gated
 //! phases against `RFC-0001-v2.md`. See [`PLAN.md`][plan] for the build
 //! roadmap and `CONFORMANCE.md` for the per-section status.
@@ -24,7 +24,7 @@
 //! phases populate the runtime, client, transports, and CLI as described
 //! in [`PLAN.md`][plan].
 //!
-//! [rfc]: https://github.com/nficano/arpc/blob/main/agent-runtime-control-protocol/docs/draft-arcp-01.md
+//! [rfc]: https://github.com/nficano/arpc/blob/main/spec/docs/draft-arcp-1.1.md
 //! [plan]: https://github.com/nficano/arpc/blob/main/rust-sdk/PLAN.md
 
 #![deny(unsafe_code)]
@@ -51,7 +51,7 @@ pub use runtime::ARCPRuntime;
 
 /// Protocol version implemented by this crate, as carried in the `arcp` field
 /// of every envelope (RFC §6.1).
-pub const PROTOCOL_VERSION: &str = "1.0";
+pub const PROTOCOL_VERSION: &str = "1.1";
 
 /// Implementation version of this crate, derived from `Cargo.toml`.
 pub const IMPL_VERSION: &str = env!("CARGO_PKG_VERSION");

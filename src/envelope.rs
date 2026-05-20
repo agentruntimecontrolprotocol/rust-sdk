@@ -48,7 +48,7 @@ pub enum Priority {
 ///
 /// ```json
 /// {
-///   "arcp": "1.0", "id": "msg_...", "timestamp": "...",
+///   "arcp": "1.1", "id": "msg_...", "timestamp": "...",
 ///   "type": "ping", "payload": {}
 /// }
 /// ```
@@ -293,7 +293,7 @@ mod tests {
         // Both `type` and `payload` are envelope-level, not nested.
         assert_eq!(value["type"], "ping");
         assert!(value.get("payload").is_some());
-        assert_eq!(value["arcp"], "1.0");
+        assert_eq!(value["arcp"], "1.1");
         assert_eq!(value["id"], "msg_01JABC0123456789ABCDEFGHJK");
     }
 
@@ -351,7 +351,7 @@ mod tests {
         // Demonstrates the value of the raw layer: an unknown wire type
         // can still be parsed at the raw level for §21.3 dispatch.
         let wire = serde_json::json!({
-            "arcp": "1.0",
+            "arcp": "1.1",
             "id": "msg_01JABC0123456789ABCDEFGHJK",
             "timestamp": "2026-05-07T21:30:00Z",
             "type": "arcpx.example.v1",
