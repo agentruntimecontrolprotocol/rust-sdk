@@ -2,7 +2,7 @@
 
 Fourteen single-purpose codebases, each named for the protocol primitive
 it demonstrates. Mirrors the Python tree at
-[`python-sdk/examples/`](../../python-sdk/examples/).
+[`python-sdk/examples/`](https://github.com/agentruntimecontrolprotocol/python-sdk/tree/main/examples).
 
 > **Illustrative, not runnable.** Each example imports the in-repo `arcp`
 > crate as if it were a published `arcp = "1"`. Setup boilerplate

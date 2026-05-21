@@ -2,12 +2,12 @@
 
 Rust reference implementation of the **Agent Runtime Control Protocol (ARCP)** v1.1.
 
-The protocol is defined in [`RFC-0001-v2.md`](./RFC-0001-v2.md), which ships
-inside the crate. The crate's job is to make that document executable.
+The protocol is defined in [the ARCP spec](https://github.com/agentruntimecontrolprotocol/spec/blob/main/docs/draft-arcp-1.1.md).
+The crate's job is to make that document executable.
 
-> **Status:** v0.1, built across seven hard-gated phases (see
-> [`PLAN.md`](./PLAN.md) and the `phase N: ...` commits). Per-section RFC
-> status lives in [`CONFORMANCE.md`](./CONFORMANCE.md).
+> **Status:** v0.1, built across seven hard-gated phases (see the
+> `phase N: ...` commits). Per-section spec status lives in
+> [`CONFORMANCE.md`](./CONFORMANCE.md).
 
 ## What works today
 
