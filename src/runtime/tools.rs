@@ -166,6 +166,7 @@ mod tests {
             out: tx,
             pending_human: Arc::new(dashmap::DashMap::new()),
             budget: crate::runtime::context::BudgetTracker::new(),
+            lease: None,
         };
         let result = echo
             .invoke(serde_json::json!({"k": 1}), ctx)

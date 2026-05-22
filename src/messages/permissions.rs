@@ -1,7 +1,9 @@
 //! Permission challenge and lease lifecycle (RFC §15).
 
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::LeaseId;
@@ -141,19 +143,210 @@ impl CostBudget {
     pub fn subset_violation<'a>(
         &'a self,
         child: &'a Self,
-        remaining: &std::collections::HashMap<String, f64>,
+        remaining: &HashMap<String, f64>,
     ) -> Option<&'a str> {
         for c in &child.amounts {
-            let parent_remaining = remaining.get(&c.currency).copied().or_else(|| {
-                self.max(&c.currency)
-                // currency must be present on the parent at all
-            })?;
+            let parent_remaining = remaining
+                .get(&c.currency)
+                .copied()
+                .or_else(|| self.max(&c.currency));
+            let Some(parent_remaining) = parent_remaining else {
+                return Some(&c.currency);
+            };
             if c.amount > parent_remaining {
                 return Some(&c.currency);
             }
         }
         None
     }
+}
+
+/// `model.use` lease capability (ARCP v1.1 §9.7).
+///
+/// Wire shape is a list of model glob patterns. The Rust SDK supports the
+/// protocol's minimal `*` wildcard semantics: all other characters match
+/// literally and fragments must appear in order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ModelUse {
+    /// Permitted model glob patterns.
+    pub patterns: Vec<String>,
+}
+
+impl ModelUse {
+    /// Empty model-use constraint.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            patterns: Vec::new(),
+        }
+    }
+
+    /// True when `model` is permitted by one of this lease's patterns.
+    #[must_use]
+    pub fn matches(&self, model: &str) -> bool {
+        self.patterns
+            .iter()
+            .any(|pattern| glob_star_matches(pattern, model))
+    }
+
+    /// Subset check (ARCP v1.1 §9.4): every child pattern must be
+    /// implied by at least one parent pattern. Returns the first child
+    /// pattern that widens the parent envelope.
+    #[must_use]
+    pub fn subset_violation<'a>(&'a self, child: &'a Self) -> Option<&'a str> {
+        child
+            .patterns
+            .iter()
+            .find(|pattern| {
+                !self
+                    .patterns
+                    .iter()
+                    .any(|parent| glob_pattern_subsumes(parent, pattern))
+            })
+            .map(String::as_str)
+    }
+}
+
+fn glob_star_matches(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if !pattern.contains('*') {
+        return pattern == value;
+    }
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let mut rest = value;
+    for (index, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if index == 0 {
+            let Some(next) = rest.strip_prefix(part) else {
+                return false;
+            };
+            rest = next;
+            continue;
+        }
+        let Some(pos) = rest.find(part) else {
+            return false;
+        };
+        rest = &rest[pos + part.len()..];
+    }
+    pattern.ends_with('*')
+        || parts
+            .last()
+            .is_none_or(|last| rest.is_empty() || last.is_empty())
+}
+
+fn glob_pattern_subsumes(parent: &str, child: &str) -> bool {
+    if parent == "*" || parent == child {
+        return true;
+    }
+    if !parent.contains('*') {
+        return false;
+    }
+    if !child.contains('*') {
+        return glob_star_matches(parent, child);
+    }
+
+    let parent_prefix = parent.split_once('*').map_or(parent, |(prefix, _)| prefix);
+    let child_prefix = child.split_once('*').map_or(child, |(prefix, _)| prefix);
+    let parent_suffix = parent.rsplit_once('*').map_or(parent, |(_, suffix)| suffix);
+    let child_suffix = child.rsplit_once('*').map_or(child, |(_, suffix)| suffix);
+
+    child_prefix.starts_with(parent_prefix) && child_suffix.ends_with(parent_suffix)
+}
+
+/// `lease_request` capability block carried on `tool.invoke` per ARCP v1.1 §9.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LeaseRequest {
+    /// Optional `cost.budget` capability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_budget: Option<CostBudget>,
+    /// Optional `model.use` capability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_use: Option<ModelUse>,
+    /// Lease expiry bound applied to any child lease or credential TTL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Forward-compatible unknown lease capabilities.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl LeaseRequest {
+    /// Empty lease request.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// True when the lease carries no known or extension capabilities.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.cost_budget.is_none()
+            && self.model_use.is_none()
+            && self.expires_at.is_none()
+            && self.extra.is_empty()
+    }
+
+    /// §9.4 subset check across all known lease capabilities.
+    #[must_use]
+    pub fn subset_violation(
+        &self,
+        child: &Self,
+        remaining_budget: &HashMap<String, f64>,
+    ) -> Option<LeaseSubsetViolation> {
+        if let Some(child_budget) = child.cost_budget.as_ref() {
+            let Some(parent_budget) = self.cost_budget.as_ref() else {
+                return Some(LeaseSubsetViolation::CostBudget(
+                    child_budget
+                        .amounts
+                        .first()
+                        .map_or_else(|| "cost.budget".to_owned(), |a| a.currency.clone()),
+                ));
+            };
+            if let Some(currency) = parent_budget.subset_violation(child_budget, remaining_budget) {
+                return Some(LeaseSubsetViolation::CostBudget(currency.to_owned()));
+            }
+        }
+        if let Some(child_models) = child.model_use.as_ref() {
+            let Some(parent_models) = self.model_use.as_ref() else {
+                return Some(LeaseSubsetViolation::ModelUse(
+                    child_models
+                        .patterns
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "model.use".to_owned()),
+                ));
+            };
+            if let Some(pattern) = parent_models.subset_violation(child_models) {
+                return Some(LeaseSubsetViolation::ModelUse(pattern.to_owned()));
+            }
+        }
+        if let Some(child_expiry) = child.expires_at {
+            let Some(parent_expiry) = self.expires_at else {
+                return Some(LeaseSubsetViolation::ExpiresAtBeyondParent);
+            };
+            if child_expiry > parent_expiry {
+                return Some(LeaseSubsetViolation::ExpiresAtBeyondParent);
+            }
+        }
+        None
+    }
+}
+
+/// Known reasons a child lease can fail ARCP v1.1 §9.4 subsetting.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum LeaseSubsetViolation {
+    /// Child `cost.budget` exceeds the parent's remaining budget.
+    CostBudget(String),
+    /// Child `model.use` widens the parent model set.
+    ModelUse(String),
+    /// Child expiry exceeds parent expiry or parent has no expiry bound.
+    ExpiresAtBeyondParent,
 }
 
 #[cfg(test)]
@@ -222,6 +415,127 @@ mod cost_budget_tests {
         };
         let j = serde_json::to_value(&b).unwrap();
         assert_eq!(j, serde_json::json!(["USD:5", "credits:1000"]));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic, clippy::missing_panics_doc)]
+mod model_use_tests {
+    use super::*;
+
+    #[test]
+    fn parse_round_trips_through_serde() {
+        let model_use = ModelUse {
+            patterns: vec!["tier-fast/*".into()],
+        };
+        let json = serde_json::to_string(&model_use).unwrap();
+        assert_eq!(json, "[\"tier-fast/*\"]");
+        let back: ModelUse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, model_use);
+    }
+
+    #[test]
+    fn matches_exact_and_glob() {
+        let model_use = ModelUse {
+            patterns: vec!["tier-fast/*".into(), "anthropic/claude-3-haiku".into()],
+        };
+        assert!(model_use.matches("tier-fast/small"));
+        assert!(model_use.matches("anthropic/claude-3-haiku"));
+        assert!(!model_use.matches("tier-slow/small"));
+    }
+
+    #[test]
+    fn subset_rejects_expanded_set() {
+        let parent = ModelUse {
+            patterns: vec!["tier-fast/*".into()],
+        };
+        let child = ModelUse {
+            patterns: vec!["*".into()],
+        };
+        assert_eq!(parent.subset_violation(&child), Some("*"));
+    }
+
+    #[test]
+    fn subset_accepts_equal_or_narrower() {
+        let parent = ModelUse {
+            patterns: vec!["tier-fast/*".into()],
+        };
+        let equal = ModelUse {
+            patterns: vec!["tier-fast/*".into()],
+        };
+        let narrower = ModelUse {
+            patterns: vec!["tier-fast/small".into()],
+        };
+        assert!(parent.subset_violation(&equal).is_none());
+        assert!(parent.subset_violation(&narrower).is_none());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic, clippy::missing_panics_doc)]
+mod lease_request_tests {
+    use super::*;
+
+    fn budget(amount: f64) -> CostBudget {
+        CostBudget {
+            amounts: vec![CostBudgetAmount {
+                currency: "USD".into(),
+                amount,
+            }],
+        }
+    }
+
+    #[test]
+    fn subset_rejects_cost_budget_overrun() {
+        let parent = LeaseRequest {
+            cost_budget: Some(budget(5.0)),
+            ..LeaseRequest::default()
+        };
+        let child = LeaseRequest {
+            cost_budget: Some(budget(6.0)),
+            ..LeaseRequest::default()
+        };
+        assert_eq!(
+            parent.subset_violation(&child, &HashMap::new()),
+            Some(LeaseSubsetViolation::CostBudget("USD".into()))
+        );
+    }
+
+    #[test]
+    fn subset_rejects_model_use_widening() {
+        let parent = LeaseRequest {
+            model_use: Some(ModelUse {
+                patterns: vec!["tier-fast/*".into()],
+            }),
+            ..LeaseRequest::default()
+        };
+        let child = LeaseRequest {
+            model_use: Some(ModelUse {
+                patterns: vec!["*".into()],
+            }),
+            ..LeaseRequest::default()
+        };
+        assert_eq!(
+            parent.subset_violation(&child, &HashMap::new()),
+            Some(LeaseSubsetViolation::ModelUse("*".into()))
+        );
+    }
+
+    #[test]
+    fn subset_rejects_expiry_beyond_parent() {
+        let now = Utc::now();
+        let parent = LeaseRequest {
+            expires_at: Some(now),
+            ..LeaseRequest::default()
+        };
+        let child = LeaseRequest {
+            expires_at: Some(now + chrono::Duration::seconds(1)),
+            ..LeaseRequest::default()
+        };
+        assert_eq!(
+            parent.subset_violation(&child, &HashMap::new()),
+            Some(LeaseSubsetViolation::ExpiresAtBeyondParent)
+        );
     }
 }
 

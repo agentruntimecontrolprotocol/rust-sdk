@@ -108,6 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 amount: 1.0,
             }],
         }),
+        lease_request: None,
     }));
     invoke.session_id = Some(session_id);
     client_t.send(invoke).await?;

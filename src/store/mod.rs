@@ -5,4 +5,5 @@
 //! and resume (§19). Later phases add the artifact store (§16) and any
 //! additional persisted state.
 
+pub mod credentials;
 pub mod eventlog;

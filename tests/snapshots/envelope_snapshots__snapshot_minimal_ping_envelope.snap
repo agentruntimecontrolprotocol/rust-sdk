@@ -1,9 +1,10 @@
 ---
 source: tests/envelope_snapshots.rs
+assertion_line: 42
 expression: value
 ---
 {
-  "arcp": "1.0",
+  "arcp": "1.1",
   "id": "msg_01JABC0123456789ABCDEFGHJK",
   "payload": {},
   "timestamp": "2026-05-07T21:30:00Z",

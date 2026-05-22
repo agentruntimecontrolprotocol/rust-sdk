@@ -102,6 +102,7 @@ async fn submit(
         tool: tool.into(),
         arguments: args,
         cost_budget: budget,
+        lease_request: None,
     }));
     invoke.session_id = Some(session_id.clone());
     client_t.send(invoke).await.expect("send invoke");

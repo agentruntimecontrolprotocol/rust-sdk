@@ -12,6 +12,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::artifact::ArtifactStore;
 use super::context::{HumanResponse, ToolContext};
+use super::credentials::{
+    revoke_all_for_job, CredentialJobContext, CredentialLedger, CredentialProvisioner,
+};
 use super::job::{JobEntry, JobRegistry};
 use super::session::{HandshakePhase, SessionState};
 use super::subscription::SubscriptionManager;
@@ -27,10 +30,10 @@ use crate::messages::{
     CancelPayload, CancelTargetKind, Capabilities, HumanChoiceResponsePayload,
     HumanInputCancelledPayload, HumanInputResponsePayload, JobAcceptedPayload, JobCancelledPayload,
     JobCompletedPayload, JobFailedPayload, JobStartedPayload, JobState, JobSubscribePayload,
-    JobSubscribedPayload, JobUnsubscribePayload, MessageType, NackPayload, RuntimeIdentity,
-    SessionAcceptedPayload, SessionLease, SessionOpenPayload, SessionRejectedPayload,
-    SessionUnauthenticatedPayload, SubscribeAcceptedPayload, SubscribeEventPayload,
-    SubscribePayload, ToolInvokePayload, UnsubscribePayload,
+    JobSubscribedPayload, JobUnsubscribePayload, LeaseRequest, MessageType, NackPayload,
+    RuntimeIdentity, SessionAcceptedPayload, SessionLease, SessionOpenPayload,
+    SessionRejectedPayload, SessionUnauthenticatedPayload, SubscribeAcceptedPayload,
+    SubscribeEventPayload, SubscribePayload, ToolInvokePayload, UnsubscribePayload,
 };
 use crate::store::eventlog::EventLog;
 use crate::transport::Transport;
@@ -44,6 +47,7 @@ pub struct RuntimeBuilder {
     runtime_identity: RuntimeIdentity,
     session_lease_seconds: Option<u64>,
     ack_window: Option<u64>,
+    credential_provisioner: Option<Arc<dyn CredentialProvisioner>>,
 }
 
 impl Default for RuntimeBuilder {
@@ -79,6 +83,7 @@ impl RuntimeBuilder {
             },
             session_lease_seconds: Some(3600),
             ack_window: None,
+            credential_provisioner: None,
         }
     }
 
@@ -129,6 +134,18 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Register a provisioner for ARCP v1.1 lease-bound credentials.
+    #[must_use]
+    pub fn with_credential_provisioner(
+        mut self,
+        provisioner: Arc<dyn CredentialProvisioner>,
+    ) -> Self {
+        self.credential_provisioner = Some(provisioner);
+        self.advertised_capabilities.model_use = Some(true);
+        self.advertised_capabilities.provisioned_credentials = Some(true);
+        self
+    }
+
     /// Construct an [`ARCPRuntime`] sharing this configuration. The
     /// returned runtime is cheap to clone.
     ///
@@ -137,6 +154,13 @@ impl RuntimeBuilder {
     /// Returns [`ARCPError::Storage`] if the in-memory event log cannot be
     /// initialised (extremely unlikely; signals `SQLite` link failure).
     pub async fn build(self) -> Result<ARCPRuntime, ARCPError> {
+        if self.advertised_capabilities.provisioned_credentials == Some(true)
+            && self.credential_provisioner.is_none()
+        {
+            return Err(ARCPError::FailedPrecondition {
+                detail: "provisioned_credentials advertised without a CredentialProvisioner".into(),
+            });
+        }
         let event_log = EventLog::in_memory().await?;
         Ok(ARCPRuntime {
             inner: Arc::new(RuntimeInner {
@@ -152,6 +176,8 @@ impl RuntimeBuilder {
                 subscriptions: SubscriptionManager::new(),
                 jobs: JobRegistry::new(),
                 session_principals: DashMap::new(),
+                credential_provisioner: self.credential_provisioner,
+                credential_ledger: CredentialLedger::new(),
             }),
         })
     }
@@ -178,6 +204,10 @@ struct RuntimeInner {
     /// Per-session authenticated principal. Used by `job.subscribe`
     /// authorization (default policy: same-principal as the submitter).
     session_principals: DashMap<SessionId, Option<String>>,
+    /// Optional provisioner for lease-bound upstream credentials.
+    credential_provisioner: Option<Arc<dyn CredentialProvisioner>>,
+    /// Runtime ledger of outstanding credential ids.
+    credential_ledger: CredentialLedger,
 }
 
 /// The ARCP runtime. Cheap to clone; share across tasks.
@@ -272,7 +302,8 @@ impl ARCPRuntime {
                 // the wrapper isn't re-broadcast, which would cause an
                 // echo storm whenever a filter matches subscribe.event.
                 if !matches!(env.payload, MessageType::SubscribeEvent(_)) {
-                    let _ = writer_subs.publish(&env);
+                    let publish_env = redact_for_subscribers(&env);
+                    let _ = writer_subs.publish(&publish_env);
                 }
                 // Flow control (§6.5): for countable events, gate on the
                 // sliding window. Non-countable envelopes (heartbeats,
@@ -371,6 +402,7 @@ impl ARCPRuntime {
                             &connection_token,
                             envelope.id.clone(),
                             s.session_id.clone(),
+                            s.principal.clone(),
                             payload,
                         )
                         .await;
@@ -689,18 +721,10 @@ impl ARCPRuntime {
         connection_token: &CancellationToken,
         correlation_id: MessageId,
         session_id: SessionId,
+        principal: Option<String>,
         payload: ToolInvokePayload,
     ) {
         let job_id = JobId::new();
-
-        // job.accepted
-        let mut accepted = Envelope::new(MessageType::JobAccepted(JobAcceptedPayload {
-            job_id: job_id.clone(),
-        }));
-        accepted.correlation_id = Some(correlation_id.clone());
-        accepted.session_id = Some(session_id.clone());
-        accepted.job_id = Some(job_id.clone());
-        let _ = out.send(accepted).await;
 
         // ARCP v1.1 §7.5: parse the requested tool/agent as an
         // AgentRef so a `name@version` reference resolves correctly.
@@ -719,6 +743,22 @@ impl ARCPRuntime {
                 let _ = out.send(err).await;
                 return;
             }
+        };
+        let lease = effective_lease(&payload);
+        let defer_accepted = self.inner.credential_provisioner.is_some() && lease.is_some();
+        let accepted_sent = if defer_accepted {
+            false
+        } else {
+            let mut accepted = Envelope::new(MessageType::JobAccepted(JobAcceptedPayload {
+                job_id: job_id.clone(),
+                credentials: vec![],
+                lease: lease.clone(),
+            }));
+            accepted.correlation_id = Some(correlation_id.clone());
+            accepted.session_id = Some(session_id.clone());
+            accepted.job_id = Some(job_id.clone());
+            let _ = out.send(accepted).await;
+            true
         };
 
         // If a version is pinned, the advertised inventory MUST satisfy
@@ -757,6 +797,53 @@ impl ARCPRuntime {
             return;
         };
 
+        let credentials = if let (Some(provisioner), Some(lease_ref)) =
+            (&self.inner.credential_provisioner, lease.as_ref())
+        {
+            let ctx = CredentialJobContext {
+                job_id: job_id.clone(),
+                session_id: session_id.clone(),
+                principal: principal.clone(),
+                parent_job_id: None,
+            };
+            match provisioner.issue(lease_ref, &ctx).await {
+                Ok(credentials) => {
+                    self.inner
+                        .credential_ledger
+                        .record_issued(&job_id, &credentials);
+                    credentials
+                }
+                Err(e) => {
+                    let mut err = Envelope::new(MessageType::JobFailed(JobFailedPayload {
+                        code: e.code(),
+                        retryable: Some(e.retryable()),
+                        message: e.to_string(),
+                        details: None,
+                    }));
+                    err.correlation_id = Some(correlation_id);
+                    err.session_id = Some(session_id);
+                    err.job_id = Some(job_id);
+                    let _ = out.send(err).await;
+                    return;
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        // job.accepted
+        if !accepted_sent {
+            let mut accepted = Envelope::new(MessageType::JobAccepted(JobAcceptedPayload {
+                job_id: job_id.clone(),
+                credentials,
+                lease: lease.clone(),
+            }));
+            accepted.correlation_id = Some(correlation_id.clone());
+            accepted.session_id = Some(session_id.clone());
+            accepted.job_id = Some(job_id.clone());
+            let _ = out.send(accepted).await;
+        }
+
         let cancel = connection_token.child_token();
         let entry = JobEntry {
             job_id: job_id.clone(),
@@ -769,20 +856,24 @@ impl ARCPRuntime {
             created_at: chrono::Utc::now(),
             last_event_seq: 0,
             parent_job_id: None,
+            credential_ids: self.inner.credential_ledger.outstanding_for_job(&job_id),
+            lease: lease.clone(),
         };
 
         let out_clone = out.clone();
         let jobs_clone = jobs.clone();
         let pending_human_clone = Arc::clone(pending_human);
+        let provisioner_clone = self.inner.credential_provisioner.clone();
+        let credential_ledger_clone = self.inner.credential_ledger.clone();
         let cancel_for_task = cancel;
         // ARCP v1.1 §9.6: seed the per-job budget tracker from the
         // `cost_budget` field on `tool.invoke`. Absent / empty means
         // budgeting is disabled for this job.
-        let budget_tracker = payload
-            .cost_budget
+        let budget_tracker = lease
             .as_ref()
-            .map_or_else(crate::runtime::context::BudgetTracker::new, |b| {
-                crate::runtime::context::BudgetTracker::from_budget(b)
+            .and_then(|lease| lease.cost_budget.as_ref())
+            .map_or_else(crate::runtime::context::BudgetTracker::new, |budget| {
+                crate::runtime::context::BudgetTracker::from_budget(budget)
             });
 
         let join = tokio::spawn(async move {
@@ -804,6 +895,7 @@ impl ARCPRuntime {
                 out: out_clone.clone(),
                 pending_human: pending_human_clone,
                 budget: budget_tracker,
+                lease,
             };
 
             let outcome = tokio::select! {
@@ -846,8 +938,15 @@ impl ARCPRuntime {
             let mut term = Envelope::new(terminal);
             term.correlation_id = Some(correlation_id);
             term.session_id = Some(session_id);
-            term.job_id = Some(job_id);
+            term.job_id = Some(job_id.clone());
             let _ = out_clone.send(term).await;
+            if let Some(provisioner) = provisioner_clone.as_ref() {
+                if let Err(e) =
+                    revoke_all_for_job(&credential_ledger_clone, provisioner, &job_id).await
+                {
+                    tracing::warn!(error = %e, job_id = %job_id, "failed to revoke credentials");
+                }
+            }
         });
 
         jobs.insert(entry, join);
@@ -903,6 +1002,11 @@ impl ARCPRuntime {
             binary_streams: intersect_bool(runtime_caps.binary_streams, client_caps.binary_streams),
             agent_handoff: intersect_bool(runtime_caps.agent_handoff, client_caps.agent_handoff),
             human_input: intersect_bool(runtime_caps.human_input, client_caps.human_input),
+            model_use: intersect_bool(runtime_caps.model_use, client_caps.model_use),
+            provisioned_credentials: intersect_bool(
+                runtime_caps.provisioned_credentials,
+                client_caps.provisioned_credentials,
+            ),
             artifacts: intersect_bool(runtime_caps.artifacts, client_caps.artifacts),
             subscriptions: intersect_bool(runtime_caps.subscriptions, client_caps.subscriptions),
             scheduled_jobs: intersect_bool(runtime_caps.scheduled_jobs, client_caps.scheduled_jobs),
@@ -1179,6 +1283,26 @@ enum Outcome {
     Completed(serde_json::Value),
     Failed(ARCPError),
     Cancelled(String),
+}
+
+fn effective_lease(payload: &ToolInvokePayload) -> Option<LeaseRequest> {
+    if let Some(lease) = payload.lease_request.clone() {
+        return Some(lease);
+    }
+    payload.cost_budget.clone().map(|cost_budget| LeaseRequest {
+        cost_budget: Some(cost_budget),
+        model_use: None,
+        expires_at: None,
+        extra: std::collections::BTreeMap::new(),
+    })
+}
+
+fn redact_for_subscribers(env: &Envelope) -> Envelope {
+    let mut out = env.clone();
+    if let MessageType::JobAccepted(payload) = &mut out.payload {
+        payload.credentials.clear();
+    }
+    out
 }
 
 /// Sentinel key for streamed-result agents (ARCP v1.1 §8.4).

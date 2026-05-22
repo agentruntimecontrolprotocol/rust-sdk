@@ -43,3 +43,14 @@ CREATE TABLE IF NOT EXISTS idempotency (
     created_utc       TEXT NOT NULL,
     PRIMARY KEY (session_principal, idempotency_key)
 );
+
+-- Outstanding provisioned credentials for revocation recovery (ARCP v1.1 §9.8).
+CREATE TABLE IF NOT EXISTS outstanding_credentials (
+    credential_id TEXT PRIMARY KEY,
+    job_id        TEXT    NOT NULL,
+    issued_at     TEXT    NOT NULL,
+    revoked_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS outstanding_credentials_job_idx
+    ON outstanding_credentials (job_id);

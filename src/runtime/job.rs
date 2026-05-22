@@ -16,8 +16,10 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use super::credentials::CredentialId;
 use crate::ids::{JobId, MessageId, SessionId};
 pub use crate::messages::JobState;
+use crate::messages::LeaseRequest;
 
 /// Per-job runtime bookkeeping.
 #[derive(Debug)]
@@ -41,6 +43,10 @@ pub struct JobEntry {
     pub last_event_seq: u64,
     /// Parent job id for delegated / child jobs.
     pub parent_job_id: Option<JobId>,
+    /// Provisioned credential ids issued for this job.
+    pub credential_ids: Vec<CredentialId>,
+    /// Accepted lease constraints for this job.
+    pub lease: Option<LeaseRequest>,
 }
 
 /// Map of in-flight jobs, keyed by [`JobId`].
@@ -258,6 +264,8 @@ mod tests {
             created_at: chrono::Utc::now(),
             last_event_seq: 0,
             parent_job_id: None,
+            credential_ids: vec![],
+            lease: None,
         };
         // A no-op task so the JoinHandle is well-formed.
         let join = tokio::spawn(async {});

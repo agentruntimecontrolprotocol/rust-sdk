@@ -96,6 +96,9 @@ pub enum ErrorCode {
     /// `BUDGET_EXHAUSTED` (ARCP v1.1 §12; §9.6)
     #[serde(rename = "BUDGET_EXHAUSTED")]
     BudgetExhausted,
+    /// `LEASE_SUBSET_VIOLATION` (ARCP v1.1 §9.4)
+    #[serde(rename = "LEASE_SUBSET_VIOLATION")]
+    LeaseSubsetViolation,
     /// `AGENT_VERSION_NOT_AVAILABLE` (ARCP v1.1 §12; §7.5)
     #[serde(rename = "AGENT_VERSION_NOT_AVAILABLE")]
     AgentVersionNotAvailable,
@@ -146,6 +149,7 @@ impl ErrorCode {
             Self::LeaseRevoked => "LEASE_REVOKED",
             Self::BackpressureOverflow => "BACKPRESSURE_OVERFLOW",
             Self::BudgetExhausted => "BUDGET_EXHAUSTED",
+            Self::LeaseSubsetViolation => "LEASE_SUBSET_VIOLATION",
             Self::AgentVersionNotAvailable => "AGENT_VERSION_NOT_AVAILABLE",
         }
     }
@@ -317,6 +321,13 @@ pub enum ARCPError {
         detail: String,
     },
 
+    /// A delegated or child lease attempted to exceed its parent envelope.
+    #[error("lease subset violation: {detail}")]
+    LeaseSubsetViolation {
+        /// Description of the violated lease axis.
+        detail: String,
+    },
+
     /// `job.submit` named an `agent@version` the runtime does not have (ARCP v1.1 §7.5).
     #[error("agent version not available: {agent}@{version}")]
     AgentVersionNotAvailable {
@@ -375,6 +386,7 @@ impl ARCPError {
             Self::LeaseRevoked { .. } => ErrorCode::LeaseRevoked,
             Self::BackpressureOverflow { .. } => ErrorCode::BackpressureOverflow,
             Self::BudgetExhausted { .. } => ErrorCode::BudgetExhausted,
+            Self::LeaseSubsetViolation { .. } => ErrorCode::LeaseSubsetViolation,
             Self::AgentVersionNotAvailable { .. } => ErrorCode::AgentVersionNotAvailable,
             Self::Unknown { .. } | Self::Serialization(_) => ErrorCode::Unknown,
         }
@@ -421,6 +433,7 @@ mod tests {
             ErrorCode::LeaseRevoked,
             ErrorCode::BackpressureOverflow,
             ErrorCode::BudgetExhausted,
+            ErrorCode::LeaseSubsetViolation,
             ErrorCode::AgentVersionNotAvailable,
             ErrorCode::Unknown,
         ] {
@@ -459,6 +472,7 @@ mod tests {
             ErrorCode::Unimplemented,
             ErrorCode::Unauthenticated,
             ErrorCode::DataLoss,
+            ErrorCode::LeaseSubsetViolation,
         ] {
             assert!(!c.retryable(), "{c} should NOT be retryable");
         }
@@ -485,6 +499,10 @@ mod tests {
         assert_eq!(ErrorCode::BudgetExhausted.as_str(), "BUDGET_EXHAUSTED");
         assert_eq!(ErrorCode::LeaseExpired.as_str(), "LEASE_EXPIRED");
         assert_eq!(
+            ErrorCode::LeaseSubsetViolation.as_str(),
+            "LEASE_SUBSET_VIOLATION"
+        );
+        assert_eq!(
             ErrorCode::AgentVersionNotAvailable.as_str(),
             "AGENT_VERSION_NOT_AVAILABLE"
         );
@@ -499,6 +517,9 @@ mod tests {
         let budget: ErrorCode =
             serde_json::from_str("\"BUDGET_EXHAUSTED\"").expect("deserialize budget");
         assert_eq!(budget, ErrorCode::BudgetExhausted);
+        let subset: ErrorCode =
+            serde_json::from_str("\"LEASE_SUBSET_VIOLATION\"").expect("deserialize subset");
+        assert_eq!(subset, ErrorCode::LeaseSubsetViolation);
         let agent_ver: ErrorCode = serde_json::from_str("\"AGENT_VERSION_NOT_AVAILABLE\"")
             .expect("deserialize agent version");
         assert_eq!(agent_ver, ErrorCode::AgentVersionNotAvailable);
@@ -511,6 +532,12 @@ mod tests {
         };
         assert_eq!(budget.code(), ErrorCode::BudgetExhausted);
         assert!(!budget.retryable());
+
+        let subset = ARCPError::LeaseSubsetViolation {
+            detail: "model.use widened".into(),
+        };
+        assert_eq!(subset.code(), ErrorCode::LeaseSubsetViolation);
+        assert!(!subset.retryable());
 
         let agent_ver = ARCPError::AgentVersionNotAvailable {
             agent: "summarizer".into(),

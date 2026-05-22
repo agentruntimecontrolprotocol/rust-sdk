@@ -12,6 +12,7 @@
 
 pub mod artifact;
 pub mod context;
+pub mod credentials;
 pub mod job;
 pub mod server;
 pub mod session;
@@ -20,6 +21,10 @@ pub mod tools;
 
 pub use artifact::ArtifactStore;
 pub use context::{HumanResponse, ToolContext};
+pub use credentials::{
+    CredentialId, CredentialJobContext, CredentialLedger, CredentialProvisioner, CredentialScheme,
+    InMemoryCredentialProvisioner, ProvisionedCredential,
+};
 pub use job::{JobEntry, JobRegistry, JobState};
 pub use server::{ARCPRuntime, RuntimeBuilder};
 pub use session::SessionState;

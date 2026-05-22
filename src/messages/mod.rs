@@ -47,8 +47,8 @@ pub use human::{
 };
 pub use permissions::{
     CostBudget, CostBudgetAmount, CostBudgetParseError, LeaseExtendedPayload, LeaseGrantedPayload,
-    LeaseRefreshPayload, LeaseRevokedPayload, PermissionDenyPayload, PermissionGrantPayload,
-    PermissionRequestPayload, TrustLevel,
+    LeaseRefreshPayload, LeaseRequest, LeaseRevokedPayload, LeaseSubsetViolation, ModelUse,
+    PermissionDenyPayload, PermissionGrantPayload, PermissionRequestPayload, TrustLevel,
 };
 pub use session::{
     AuthScheme, ClientIdentity, Credentials, JobListEntry, RuntimeIdentity, SessionAcceptedPayload,
@@ -93,6 +93,12 @@ pub struct Capabilities {
     /// Per RFC §12.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub human_input: Option<bool>,
+    /// Per ARCP v1.1 §9.7.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_use: Option<bool>,
+    /// Per ARCP v1.1 §9.8.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provisioned_credentials: Option<bool>,
     /// Per RFC §16.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifacts: Option<bool>,
@@ -220,6 +226,10 @@ impl Capabilities {
             CapabilityName::BinaryStreams => matches!(self.binary_streams, Some(true)),
             CapabilityName::AgentHandoff => matches!(self.agent_handoff, Some(true)),
             CapabilityName::HumanInput => matches!(self.human_input, Some(true)),
+            CapabilityName::ModelUse => matches!(self.model_use, Some(true)),
+            CapabilityName::ProvisionedCredentials => {
+                matches!(self.provisioned_credentials, Some(true))
+            }
             CapabilityName::Artifacts => matches!(self.artifacts, Some(true)),
             CapabilityName::Subscriptions => matches!(self.subscriptions, Some(true)),
             CapabilityName::ScheduledJobs => matches!(self.scheduled_jobs, Some(true)),
@@ -244,6 +254,10 @@ pub enum CapabilityName {
     AgentHandoff,
     /// `human_input`
     HumanInput,
+    /// `model_use`
+    ModelUse,
+    /// `provisioned_credentials`
+    ProvisionedCredentials,
     /// `artifacts`
     Artifacts,
     /// `subscriptions`
@@ -813,6 +827,8 @@ mod tests {
         assert!(
             MessageType::JobAccepted(crate::messages::JobAcceptedPayload {
                 job_id: crate::ids::JobId::new(),
+                credentials: vec![],
+                lease: None,
             })
             .is_countable_event()
         );
@@ -1165,6 +1181,8 @@ mod tests {
             (
                 MessageType::JobAccepted(JobAcceptedPayload {
                     job_id: crate::ids::JobId::new(),
+                    credentials: vec![],
+                    lease: None,
                 }),
                 "job.accepted",
             ),

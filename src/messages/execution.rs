@@ -205,6 +205,10 @@ pub struct ToolInvokePayload {
     /// reaches zero.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_budget: Option<crate::messages::permissions::CostBudget>,
+    /// Full ARCP v1.1 lease request. When both this and the legacy
+    /// `cost_budget` field are present, this block takes precedence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_request: Option<crate::messages::permissions::LeaseRequest>,
 }
 
 impl ToolInvokePayload {
@@ -215,6 +219,7 @@ impl ToolInvokePayload {
             tool: tool.into(),
             arguments,
             cost_budget: None,
+            lease_request: None,
         }
     }
 }
@@ -291,10 +296,16 @@ impl JobState {
 }
 
 /// Payload for `job.accepted`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JobAcceptedPayload {
     /// Newly minted job id.
     pub job_id: JobId,
+    /// Lease-bound credentials issued for this job.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credentials: Vec<crate::runtime::credentials::ProvisionedCredential>,
+    /// Final lease constraints accepted by the runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<crate::messages::permissions::LeaseRequest>,
 }
 
 /// Payload for `job.started`.

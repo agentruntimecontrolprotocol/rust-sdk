@@ -247,7 +247,7 @@ impl<T: Transport + 'static> Session<Unauthenticated, T> {
                 continue;
             };
             match env.payload {
-                MessageType::JobAccepted(JobAcceptedPayload { job_id }) => {
+                MessageType::JobAccepted(JobAcceptedPayload { job_id, .. }) => {
                     if let Some((_, tx)) = inner.pending_accepted.remove(&corr) {
                         let _ = tx.send(job_id);
                     }

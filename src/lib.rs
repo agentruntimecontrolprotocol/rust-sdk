@@ -2,14 +2,14 @@
 //!
 //! This crate is a Rust reference implementation of [ARCP v1.1][rfc], the
 //! Agent Runtime Control Protocol. The crate is being built in hard-gated
-//! phases against `RFC-0001-v2.md`. See [`PLAN.md`][plan] for the build
+//! phases against the v1.1 draft. See [`PLAN.md`][plan] for the build
 //! roadmap and `CONFORMANCE.md` for the per-section status.
 //!
 //! ## Scope
 //!
 //! v0.1 implements the protocol fundamentals: envelope, sessions and
 //! authentication (`bearer`, `signed_jwt`, `none`), capability negotiation,
-//! jobs, streams, human-in-the-loop, permissions, leases, subscriptions,
+//! jobs, streams, permissions, leases, subscriptions,
 //! artifacts (inline base64 only), the canonical error taxonomy,
 //! observability primitives, and the `WebSocket` and stdio transports.
 //!

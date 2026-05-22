@@ -15,7 +15,7 @@ use crate::error::{ARCPError, ErrorCode};
 use crate::ids::{JobId, MessageId, SessionId};
 use crate::messages::{
     CostBudget, HumanChoiceRequestPayload, HumanInputRequestPayload, JobResultChunkPayload,
-    MessageType, MetricPayload, ResultChunkEncoding,
+    LeaseRequest, MessageType, MetricPayload, ResultChunkEncoding,
 };
 
 /// Per-job dispatch context.
@@ -30,6 +30,8 @@ pub struct ToolContext {
     /// Per-job `cost.budget` tracker (ARCP v1.1 §9.6). Constructed
     /// empty when no budget was declared on `tool.invoke`.
     pub(crate) budget: BudgetTracker,
+    /// Accepted lease request for this job.
+    pub(crate) lease: Option<LeaseRequest>,
 }
 
 /// Per-job `cost.budget` counters (ARCP v1.1 §9.6).
@@ -323,6 +325,44 @@ impl ToolContext {
         &self.budget
     }
 
+    /// Accepted lease request for this job, if one was supplied.
+    #[must_use]
+    pub const fn lease(&self) -> Option<&LeaseRequest> {
+        self.lease.as_ref()
+    }
+
+    /// Enforce this job's `model.use` lease capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ARCPError::PermissionDenied`] when the lease declares
+    /// `model.use` and `model` matches none of the allowed patterns.
+    pub fn enforce_model_use(&self, model: &str) -> Result<(), ARCPError> {
+        let Some(model_use) = self
+            .lease
+            .as_ref()
+            .and_then(|lease| lease.model_use.as_ref())
+        else {
+            return Ok(());
+        };
+        if model_use.matches(model) {
+            Ok(())
+        } else {
+            Err(ARCPError::PermissionDenied {
+                detail: format!("model {model} not permitted by lease model.use"),
+            })
+        }
+    }
+
+    /// Translate an upstream credential budget signal into ARCP's canonical
+    /// `BUDGET_EXHAUSTED` error.
+    #[must_use]
+    pub fn translate_upstream_budget_exhausted(&self, detail: impl Into<String>) -> ARCPError {
+        ARCPError::BudgetExhausted {
+            detail: detail.into(),
+        }
+    }
+
     /// Charge `amount` against the `currency` counter and emit a
     /// matching `metric` event (ARCP v1.1 §9.6).
     ///
@@ -439,6 +479,7 @@ mod tests {
             out: out_tx,
             pending_human: Arc::clone(&pending),
             budget: BudgetTracker::new(),
+            lease: None,
         };
         (ctx, out_rx, pending)
     }
