@@ -63,7 +63,7 @@ chrono = { version = "0.4", default-features = false, features = ["serde", "cloc
 async-trait = "0.1"
 base64 = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 
 # Optional transport feature
 tokio-tungstenite = { version = "0.24", optional = true }
