@@ -145,7 +145,6 @@ async fn serve_ws(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut caps = Capabilities {
         streaming: Some(true),
-        human_input: Some(true),
         artifacts: Some(true),
         ..Default::default()
     };

@@ -216,12 +216,6 @@ fn core_type_set() -> &'static BTreeSet<&'static str> {
             "stream.chunk",
             "stream.close",
             "stream.error",
-            // operator-mediated interaction
-            "human.input.request",
-            "human.input.response",
-            "human.choice.request",
-            "human.choice.response",
-            "human.input.cancelled",
             // permissions & leases
             "permission.request",
             "permission.grant",

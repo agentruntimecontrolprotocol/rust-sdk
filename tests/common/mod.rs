@@ -25,7 +25,6 @@ pub async fn spawn_runtime_with_bearer(
 ) -> (ARCPRuntime, ARCPClient<MemoryTransport>) {
     let mut caps = Capabilities {
         streaming: Some(true),
-        human_input: Some(true),
         artifacts: Some(true),
         ..Default::default()
     };

@@ -26,7 +26,6 @@ it demonstrates. Mirrors the Python tree at
 | [`resumability/`](./resumability) | **Real crash and resume.** `std::process::exit(137)` mid-flight; second invocation picks up at the next step. | §10, §19, §6.4 |
 | [`reasoning_streams/`](./reasoning_streams) | `kind: thought` stream + a peer runtime that subscribes and delegates critiques back. | §11.4, §13, §14 |
 | [`extensions.rs`](./extensions.rs) | Custom `arcpx.sdr.*.v1` extension namespace + unknown-message handling. | §21 |
-| [`human_input/`](./human_input) | `human.input.request` fanned across phone/email/Slack; first-wins resolution. | §12 |
 | [`cancellation.rs`](./cancellation.rs) | Cooperative `cancel` (terminate) vs `interrupt` (pause and ask). | §10.4–§10.5 |
 | [`mcp/`](./mcp) | ARCP runtime fronting an MCP server: `tool.invoke` → MCP `call_tool`. | §20 |
 

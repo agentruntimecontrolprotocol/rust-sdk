@@ -26,8 +26,7 @@ pub trait ToolHandler: Send + Sync {
     ///
     /// `arguments` is the raw `arguments` block from the envelope.
     /// `ctx` is the per-job [`ToolContext`] — the handler polls
-    /// `ctx.cancel` for cooperative cancellation and uses
-    /// `ctx.request_human_input` etc. to drive RFC §12 round-trips.
+    /// `ctx.cancel` for cooperative cancellation.
     ///
     /// # Errors
     ///
@@ -164,7 +163,6 @@ mod tests {
             session_id: crate::ids::SessionId::new(),
             correlation_id: crate::ids::MessageId::new(),
             out: tx,
-            pending_human: Arc::new(dashmap::DashMap::new()),
             budget: crate::runtime::context::BudgetTracker::new(),
             lease: None,
         };

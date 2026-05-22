@@ -85,7 +85,6 @@ fn registry_classifies_core_types_independent_of_advertised_set() {
         "tool.invoke",
         "job.progress",
         "stream.chunk",
-        "human.input.request",
         "permission.request",
         "lease.granted",
         "subscribe",

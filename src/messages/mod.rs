@@ -18,7 +18,6 @@ use serde::{Deserialize, Serialize};
 pub mod artifacts;
 pub mod control;
 pub mod execution;
-pub mod human;
 pub mod permissions;
 pub mod session;
 pub mod streaming;
@@ -40,10 +39,6 @@ pub use execution::{
     JobStartedPayload, JobState, ResultChunkAssembler, ResultChunkEncoding, ResultChunkError,
     ToolErrorPayload, ToolInvokePayload, ToolResultPayload, WorkflowCompletePayload,
     WorkflowStartPayload,
-};
-pub use human::{
-    ChoiceOption, HumanChoiceRequestPayload, HumanChoiceResponsePayload,
-    HumanInputCancelledPayload, HumanInputRequestPayload, HumanInputResponsePayload,
 };
 pub use permissions::{
     CostBudget, CostBudgetAmount, CostBudgetParseError, LeaseExtendedPayload, LeaseGrantedPayload,
@@ -90,9 +85,6 @@ pub struct Capabilities {
     /// Per RFC §14.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_handoff: Option<bool>,
-    /// Per RFC §12.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub human_input: Option<bool>,
     /// Per ARCP v1.1 §9.7.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_use: Option<bool>,
@@ -225,7 +217,6 @@ impl Capabilities {
             CapabilityName::Checkpoints => matches!(self.checkpoints, Some(true)),
             CapabilityName::BinaryStreams => matches!(self.binary_streams, Some(true)),
             CapabilityName::AgentHandoff => matches!(self.agent_handoff, Some(true)),
-            CapabilityName::HumanInput => matches!(self.human_input, Some(true)),
             CapabilityName::ModelUse => matches!(self.model_use, Some(true)),
             CapabilityName::ProvisionedCredentials => {
                 matches!(self.provisioned_credentials, Some(true))
@@ -252,8 +243,6 @@ pub enum CapabilityName {
     BinaryStreams,
     /// `agent_handoff`
     AgentHandoff,
-    /// `human_input`
-    HumanInput,
     /// `model_use`
     ModelUse,
     /// `provisioned_credentials`
@@ -407,23 +396,6 @@ pub enum MessageType {
     #[serde(rename = "stream.error")]
     StreamError(StreamErrorPayload),
 
-    // Human-in-the-loop
-    /// `human.input.request`
-    #[serde(rename = "human.input.request")]
-    HumanInputRequest(HumanInputRequestPayload),
-    /// `human.input.response`
-    #[serde(rename = "human.input.response")]
-    HumanInputResponse(HumanInputResponsePayload),
-    /// `human.choice.request`
-    #[serde(rename = "human.choice.request")]
-    HumanChoiceRequest(HumanChoiceRequestPayload),
-    /// `human.choice.response`
-    #[serde(rename = "human.choice.response")]
-    HumanChoiceResponse(HumanChoiceResponsePayload),
-    /// `human.input.cancelled`
-    #[serde(rename = "human.input.cancelled")]
-    HumanInputCancelled(HumanInputCancelledPayload),
-
     // Permissions & leases
     /// `permission.request`
     #[serde(rename = "permission.request")]
@@ -549,11 +521,6 @@ impl MessageType {
             Self::StreamChunk(_) => "stream.chunk",
             Self::StreamClose(_) => "stream.close",
             Self::StreamError(_) => "stream.error",
-            Self::HumanInputRequest(_) => "human.input.request",
-            Self::HumanInputResponse(_) => "human.input.response",
-            Self::HumanChoiceRequest(_) => "human.choice.request",
-            Self::HumanChoiceResponse(_) => "human.choice.response",
-            Self::HumanInputCancelled(_) => "human.input.cancelled",
             Self::PermissionRequest(_) => "permission.request",
             Self::PermissionGrant(_) => "permission.grant",
             Self::PermissionDeny(_) => "permission.deny",
@@ -958,13 +925,11 @@ mod tests {
     fn capabilities_round_trip_with_extra_fields() {
         let json = serde_json::json!({
             "streaming": true,
-            "human_input": true,
             "extensions": ["arcpx.example.v1"],
             "totally_made_up": true,
         });
         let c: Capabilities = serde_json::from_value(json).expect("deserialize");
         assert!(c.has(CapabilityName::Streaming));
-        assert!(c.has(CapabilityName::HumanInput));
         assert_eq!(c.extensions, vec!["arcpx.example.v1"]);
         assert!(c.extra.contains_key("totally_made_up"));
     }
@@ -1269,46 +1234,6 @@ mod tests {
                 "stream.error",
             ),
             (
-                MessageType::HumanInputRequest(HumanInputRequestPayload {
-                    prompt: "x".into(),
-                    response_schema: serde_json::json!({}),
-                    default: None,
-                    expires_at: now,
-                }),
-                "human.input.request",
-            ),
-            (
-                MessageType::HumanInputResponse(HumanInputResponsePayload {
-                    value: serde_json::json!(null),
-                    responded_by: "x".into(),
-                    responded_at: now,
-                }),
-                "human.input.response",
-            ),
-            (
-                MessageType::HumanChoiceRequest(HumanChoiceRequestPayload {
-                    prompt: "x".into(),
-                    options: vec![],
-                    expires_at: now,
-                }),
-                "human.choice.request",
-            ),
-            (
-                MessageType::HumanChoiceResponse(HumanChoiceResponsePayload {
-                    choice_id: "x".into(),
-                    responded_by: "x".into(),
-                    responded_at: now,
-                }),
-                "human.choice.response",
-            ),
-            (
-                MessageType::HumanInputCancelled(HumanInputCancelledPayload {
-                    code: crate::error::ErrorCode::DeadlineExceeded,
-                    message: None,
-                }),
-                "human.input.cancelled",
-            ),
-            (
                 MessageType::PermissionRequest(PermissionRequestPayload {
                     permission: "p".into(),
                     resource: "r".into(),
@@ -1495,8 +1420,8 @@ mod tests {
         for (msg, expected) in &cases {
             assert_eq!(msg.type_name(), *expected);
         }
-        // 67 message variants — sanity-check we built exactly that many.
-        // Bump this when MessageType grows in v0.2.
-        assert_eq!(cases.len(), 67);
+        // 62 message variants — sanity-check we built exactly that many.
+        // Bump this when MessageType grows.
+        assert_eq!(cases.len(), 62);
     }
 }

@@ -1,12 +1,12 @@
 [package]
 name = "arcp"
-version = "0.1.0"
+version = "1.1.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 description = "Reference implementation of the Agent Runtime Control Protocol (ARCP) v1.1"
-repository = "https://github.com/nficano/arpc"
-homepage = "https://github.com/nficano/arpc"
+repository = "https://github.com/agentruntimecontrolprotocol/rust-sdk"
+homepage = "https://github.com/agentruntimecontrolprotocol/rust-sdk"
 documentation = "https://docs.rs/arcp"
 authors = ["Nick Ficano <nficano@gmail.com>"]
 keywords = ["arcp", "agent", "protocol", "runtime", "rfc"]
@@ -113,10 +113,6 @@ path = "examples/resumability/main.rs"
 [[example]]
 name = "reasoning_streams"
 path = "examples/reasoning_streams/main.rs"
-
-[[example]]
-name = "human_input"
-path = "examples/human_input/main.rs"
 
 [[example]]
 name = "mcp"

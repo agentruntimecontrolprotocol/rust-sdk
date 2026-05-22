@@ -20,7 +20,7 @@ pub mod subscription;
 pub mod tools;
 
 pub use artifact::ArtifactStore;
-pub use context::{HumanResponse, ToolContext};
+pub use context::ToolContext;
 pub use credentials::{
     CredentialId, CredentialJobContext, CredentialLedger, CredentialProvisioner, CredentialScheme,
     InMemoryCredentialProvisioner, ProvisionedCredential,

@@ -24,7 +24,6 @@ async fn happy_path_bearer_authenticates_and_negotiates_capabilities() {
             test_client_identity(),
             Capabilities {
                 streaming: Some(true),
-                human_input: Some(true),
                 ..Default::default()
             },
         )
@@ -36,7 +35,6 @@ async fn happy_path_bearer_authenticates_and_negotiates_capabilities() {
 
     let caps = session.capabilities().await;
     assert!(caps.has(CapabilityName::Streaming));
-    assert!(caps.has(CapabilityName::HumanInput));
     // Runtime didn't advertise scheduled_jobs, so even if the client
     // had asked for it, the negotiated set must drop it.
     assert!(!caps.has(CapabilityName::ScheduledJobs));

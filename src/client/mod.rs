@@ -8,4 +8,3 @@ pub mod api;
 pub mod handlers;
 
 pub use api::{ARCPClient, Authenticated, JobHandle, Session, SubscriptionHandle, Unauthenticated};
-pub use handlers::{HumanInputHandler, NoopHumanInputHandler};

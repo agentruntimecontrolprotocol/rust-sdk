@@ -6,12 +6,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::artifact::ArtifactStore;
-use super::context::{HumanResponse, ToolContext};
+use super::context::ToolContext;
 use super::credentials::{
     revoke_all_for_job, CredentialJobContext, CredentialLedger, CredentialProvisioner,
 };
@@ -27,8 +27,7 @@ use crate::ids::SubscriptionId;
 use crate::ids::{JobId, MessageId, SessionId};
 use crate::messages::{
     ArtifactFetchPayload, ArtifactPutPayload, ArtifactRefPayload, ArtifactReleasePayload,
-    CancelPayload, CancelTargetKind, Capabilities, HumanChoiceResponsePayload,
-    HumanInputCancelledPayload, HumanInputResponsePayload, JobAcceptedPayload, JobCancelledPayload,
+    CancelPayload, CancelTargetKind, Capabilities, JobAcceptedPayload, JobCancelledPayload,
     JobCompletedPayload, JobFailedPayload, JobStartedPayload, JobState, JobSubscribePayload,
     JobSubscribedPayload, JobUnsubscribePayload, LeaseRequest, MessageType, NackPayload,
     RuntimeIdentity, SessionAcceptedPayload, SessionLease, SessionOpenPayload,
@@ -331,8 +330,6 @@ impl ARCPRuntime {
 
         let connection_token = CancellationToken::new();
         let jobs = self.inner.jobs.clone();
-        let pending_human: Arc<DashMap<MessageId, oneshot::Sender<HumanResponse>>> =
-            Arc::new(DashMap::new());
         // Subscriptions owned by this connection, so we can drop them on
         // close even if the SubscriptionManager is shared across sessions.
         let connection_subs: Arc<DashMap<SubscriptionId, JoinHandle<()>>> =
@@ -398,7 +395,6 @@ impl ARCPRuntime {
                         self.spawn_tool_invoke(
                             &out_tx,
                             &jobs,
-                            &pending_human,
                             &connection_token,
                             envelope.id.clone(),
                             s.session_id.clone(),
@@ -411,29 +407,6 @@ impl ARCPRuntime {
                 MessageType::Cancel(payload) => {
                     self.handle_cancel(&out_tx, &jobs, envelope.id.clone(), &payload)
                         .await;
-                }
-                MessageType::HumanInputResponse(HumanInputResponsePayload { value, .. }) => {
-                    if let Some(corr) = envelope.correlation_id.clone() {
-                        if let Some((_, tx)) = pending_human.remove(&corr) {
-                            let _ = tx.send(HumanResponse::Value(value));
-                        }
-                    }
-                }
-                MessageType::HumanChoiceResponse(HumanChoiceResponsePayload {
-                    choice_id, ..
-                }) => {
-                    if let Some(corr) = envelope.correlation_id.clone() {
-                        if let Some((_, tx)) = pending_human.remove(&corr) {
-                            let _ = tx.send(HumanResponse::Choice(choice_id));
-                        }
-                    }
-                }
-                MessageType::HumanInputCancelled(HumanInputCancelledPayload { code, .. }) => {
-                    if let Some(corr) = envelope.correlation_id.clone() {
-                        if let Some((_, tx)) = pending_human.remove(&corr) {
-                            let _ = tx.send(HumanResponse::Cancelled(code));
-                        }
-                    }
                 }
                 MessageType::Ping(_) => {
                     let mut env =
@@ -717,7 +690,6 @@ impl ARCPRuntime {
         &self,
         out: &mpsc::Sender<Envelope>,
         jobs: &JobRegistry,
-        pending_human: &Arc<DashMap<MessageId, oneshot::Sender<HumanResponse>>>,
         connection_token: &CancellationToken,
         correlation_id: MessageId,
         session_id: SessionId,
@@ -862,7 +834,6 @@ impl ARCPRuntime {
 
         let out_clone = out.clone();
         let jobs_clone = jobs.clone();
-        let pending_human_clone = Arc::clone(pending_human);
         let provisioner_clone = self.inner.credential_provisioner.clone();
         let credential_ledger_clone = self.inner.credential_ledger.clone();
         let cancel_for_task = cancel;
@@ -893,7 +864,6 @@ impl ARCPRuntime {
                 session_id: session_id.clone(),
                 correlation_id: correlation_id.clone(),
                 out: out_clone.clone(),
-                pending_human: pending_human_clone,
                 budget: budget_tracker,
                 lease,
             };
@@ -1001,7 +971,6 @@ impl ARCPRuntime {
             checkpoints: intersect_bool(runtime_caps.checkpoints, client_caps.checkpoints),
             binary_streams: intersect_bool(runtime_caps.binary_streams, client_caps.binary_streams),
             agent_handoff: intersect_bool(runtime_caps.agent_handoff, client_caps.agent_handoff),
-            human_input: intersect_bool(runtime_caps.human_input, client_caps.human_input),
             model_use: intersect_bool(runtime_caps.model_use, client_caps.model_use),
             provisioned_credentials: intersect_bool(
                 runtime_caps.provisioned_credentials,

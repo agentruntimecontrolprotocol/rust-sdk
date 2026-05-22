@@ -3,7 +3,7 @@
 //! - `cancel`: cooperative termination. Runtime drives target to a clean
 //!   checkpoint inside `deadline_ms`, then escalates to `ABORTED`.
 //! - `interrupt`: pauses the job (`blocked`) and emits a
-//!   `human.input.request`. The job is NOT terminated.
+//!   `permission.request`. The job is NOT terminated.
 
 #![allow(
     clippy::todo,
@@ -67,7 +67,7 @@ async fn cancel_job(
 }
 
 /// Distinct from cancel: pauses the job (`blocked`); the runtime emits
-/// `human.input.request`. The job is NOT terminated (RFC §10.5).
+/// `permission.request`. The job is NOT terminated (RFC §10.5).
 async fn interrupt_job(_client: &Client, _job_id: &str, _prompt: &str) -> Result<(), ARCPError> {
     // client.send(envelope("interrupt", {target: "job", target_id, prompt}))
     todo!()
@@ -101,7 +101,7 @@ async fn scenario_interrupt() -> Result<(), ARCPError> {
         "Pause and ask before touching production tables.",
     )
     .await?;
-    // Runtime now emits human.input.request; answer via the human_input example.
+    // Runtime now emits permission.request; handle the grant/deny flow.
     let _next: Envelope = todo!();
     Ok(())
 }
