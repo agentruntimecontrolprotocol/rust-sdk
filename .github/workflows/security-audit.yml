@@ -56,6 +56,6 @@ jobs:
         # Restricting to licenses + bans avoids breakage when the advisory DB
         # introduces new TOML features unsupported by this pinned cargo-deny
         # version (e.g. RUSTSEC-2026-0076 parse error with cargo-deny 0.14.x).
-        uses: EmbarkStudios/cargo-deny-action@v1
+        uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses bans
