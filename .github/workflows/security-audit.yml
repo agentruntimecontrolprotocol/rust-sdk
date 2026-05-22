@@ -40,7 +40,12 @@ jobs:
         run: cargo install cargo-audit
 
       - name: Run security audit
-        run: cargo audit
+        # RUSTSEC-2023-0071: "Marvin Attack" timing sidechannel in the `rsa`
+        # crate.  All versions are affected; no upstream fix exists.  We use
+        # `rsa` only for key generation, not for ciphertext decryption, so the
+        # timing-based key-recovery attack against RSA decryption does not
+        # apply to this codebase.
+        run: cargo audit --ignore RUSTSEC-2023-0071
 
   deny:
     name: Cargo Deny
