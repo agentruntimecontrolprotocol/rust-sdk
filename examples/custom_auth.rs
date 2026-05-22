@@ -46,9 +46,11 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use arcp::auth::{AuthContext, Authenticator};
+use async_trait::async_trait;
+
+use arcp::auth::{AuthOutcome, Authenticator};
 use arcp::error::ARCPError;
-use arcp::messages::AuthScheme;
+use arcp::messages::{AuthScheme, Capabilities, ClientIdentity, Credentials};
 use arcp::transport::MemoryTransport;
 use arcp::{ARCPClient, Envelope};
 use serde_json::json;
@@ -87,18 +89,26 @@ impl HmacTokenAuthenticator {
     }
 }
 
+#[async_trait]
 impl Authenticator for HmacTokenAuthenticator {
     fn scheme(&self) -> AuthScheme {
         AuthScheme::Bearer
     }
 
-    fn authenticate(&self, ctx: &AuthContext) -> Result<String, ARCPError> {
-        let token = ctx
-            .bearer_token()
-            .ok_or_else(|| ARCPError::Unauthenticated {
-                detail: "missing bearer token".into(),
-            })?;
-        self.verify(token)
+    async fn authenticate(
+        &self,
+        _creds: &Credentials,
+        _client: &ClientIdentity,
+        _negotiated: &Capabilities,
+    ) -> Result<AuthOutcome, ARCPError> {
+        // Extract the bearer token from _creds, verify it, and return the outcome.
+        //
+        // let token = _creds.bearer_token().ok_or_else(|| ARCPError::Unauthenticated {
+        //     detail: "missing bearer token".into(),
+        // })?;
+        // let principal = self.verify(token)?;
+        // Ok(AuthOutcome::Accept { principal })
+        todo!()
     }
 }
 

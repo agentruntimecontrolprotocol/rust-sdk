@@ -43,7 +43,7 @@
     unused_variables
 )]
 
-use arcp::error::{ARCPError, ErrorCode};
+use arcp::error::ARCPError;
 use arcp::transport::MemoryTransport;
 use arcp::ARCPClient;
 use serde_json::json;
@@ -98,14 +98,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // RFC requires the runtime to reject with DUPLICATE_KEY.
     let result = submit(&client, "different-tool", &args, Some(key)).await;
     match result {
-        Err(ARCPError::Custom {
-            code: ErrorCode::DuplicateKey,
-            ..
-        }) => {
+        Err(ARCPError::AlreadyExists { .. }) => {
             println!("DUPLICATE_KEY nack received as expected — done");
         }
         other => {
-            return Err(format!("expected DUPLICATE_KEY but got: {other:?}").into());
+            return Err(format!("expected AlreadyExists but got: {other:?}").into());
         }
     }
 
