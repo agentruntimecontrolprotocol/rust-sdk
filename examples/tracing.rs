@@ -74,7 +74,7 @@ fn init_tracing() {
 }
 
 /// Submit the `parent` agent job and return its job ID.
-#[tracing::instrument(skip(client))]
+#[tracing::instrument(skip(_client))]
 async fn submit_parent(_client: &Client) -> Result<String, ARCPError> {
     // client.request(envelope("tool.invoke", {
     //   tool: "parent",
@@ -88,7 +88,7 @@ async fn submit_parent(_client: &Client) -> Result<String, ARCPError> {
 }
 
 /// Drain events for `job_id` and print each one with its trace/job IDs.
-#[tracing::instrument(skip(client))]
+#[tracing::instrument(skip(_client))]
 async fn drain(_client: &Client, _job_id: &str) -> Result<serde_json::Value, ARCPError> {
     // for await env in client.events():
     //   if env.job_id != job_id { continue }

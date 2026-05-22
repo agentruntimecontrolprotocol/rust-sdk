@@ -616,7 +616,7 @@ impl<T: Transport + 'static> std::fmt::Debug for ARCPClient<T> {
 impl<T: Transport + 'static> ARCPClient<T> {
     /// Construct over an attached transport.
     #[must_use]
-    pub fn new(transport: T) -> Self {
+    pub const fn new(transport: T) -> Self {
         Self {
             transport: Some(transport),
         }
