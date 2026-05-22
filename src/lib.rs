@@ -1,17 +1,16 @@
 //! # arcp — Agent Runtime Control Protocol (reference implementation)
 //!
 //! This crate is a Rust reference implementation of [ARCP v1.1][rfc], the
-//! Agent Runtime Control Protocol. The crate is being built in hard-gated
-//! phases against the v1.1 draft. See [`PLAN.md`][plan] for the build
-//! roadmap and `CONFORMANCE.md` for the per-section status.
+//! Agent Runtime Control Protocol. See `CONFORMANCE.md` for the per-section
+//! status and `docs/` for narrative guides.
 //!
 //! ## Scope
 //!
-//! v0.1 implements the protocol fundamentals: envelope, sessions and
+//! The crate implements the protocol fundamentals: envelopes, sessions and
 //! authentication (`bearer`, `signed_jwt`, `none`), capability negotiation,
-//! jobs, streams, permissions, leases, subscriptions,
-//! artifacts (inline base64 only), the canonical error taxonomy,
-//! observability primitives, and the `WebSocket` and stdio transports.
+//! jobs, streams, permissions, leases, subscriptions, artifacts, the canonical
+//! error taxonomy, observability primitives, and the `WebSocket`, stdio, and
+//! in-memory transports.
 //!
 //! Out-of-scope items (`HTTP/2`, `QUIC`, `mTLS`, `OAuth2`, sidecar binary
 //! frames, scheduled jobs, multi-agent delegation, workflows, trust
@@ -20,12 +19,10 @@
 //!
 //! ## Status
 //!
-//! Phase 1 — envelope, errors, extensions, event log are landed. Later
-//! phases populate the runtime, client, transports, and CLI as described
-//! in [`PLAN.md`][plan].
+//! The public API centers on [`ARCPClient`] for consumers and [`ARCPRuntime`]
+//! for runtimes.
 //!
-//! [rfc]: https://github.com/nficano/arpc/blob/main/spec/docs/draft-arcp-1.1.md
-//! [plan]: https://github.com/nficano/arpc/blob/main/rust-sdk/PLAN.md
+//! [rfc]: https://github.com/agentruntimecontrolprotocol/spec/blob/main/docs/draft-arcp-1.1.md
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]

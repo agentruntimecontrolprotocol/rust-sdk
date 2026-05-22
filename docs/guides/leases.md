@@ -1,8 +1,10 @@
-# Leases
+# Leases (§9)
 
 ARCP v1.1 leases describe the authority a job receives when the runtime accepts
-work. The Rust SDK supports `cost.budget`, `model.use`, and lease-bound
-provisioned credentials.
+work. The Rust SDK supports lease requests, subset checks, expiry, budgets,
+model-use constraints, and lease-bound provisioned credentials.
+
+Spec reference: [§9](../../../spec/docs/draft-arcp-1.1.md#9-leases).
 
 ## `cost.budget`
 
@@ -15,8 +17,9 @@ ctx.charge("cost.llm", 0.03, "USD").await?;
 
 The runtime decrements the matching currency and emits
 `cost.budget.remaining` metrics. Once a counter is exhausted, the helper returns
-`ARCPError::BudgetExhausted`, which becomes `job.failed` with
 `BUDGET_EXHAUSTED`.
+
+See [`examples/cost_budget/`](../../examples/cost_budget/).
 
 ## `model.use`
 
@@ -33,16 +36,29 @@ Tool handlers should call `ToolContext::enforce_model_use(model)` before an LLM
 or gateway call when the runtime is in the path. A mismatch returns
 `PERMISSION_DENIED`.
 
+See [`tests/model_use.rs`](../../tests/model_use.rs) for integration coverage.
+
+## Subset validation
+
 Delegation uses subset semantics: a child lease may be equal to or narrower than
 its parent. For example, `tier-fast/small` is allowed under `tier-fast/*`, but
 `*` is rejected with `LEASE_SUBSET_VIOLATION`.
 
-## Provisioned Credentials
+The effective parent lease is the lease accepted by the runtime, not merely the
+lease the parent requested.
+
+## Expiration
+
+Lease constraints may include expiration. Once expired, lease-gated operations
+return `LEASE_EXPIRED`.
+
+See [`examples/lease_expires_at.rs`](../../examples/lease_expires_at.rs).
+
+## Provisioned credentials
 
 Provisioned credentials move enforcement to an upstream service. When a runtime
-is configured with a `CredentialProvisioner`, it advertises
-`model_use` and `provisioned_credentials`. For a job with a lease request, the
-runtime:
+is configured with a `CredentialProvisioner`, it advertises `model_use` and
+`provisioned_credentials`. For a job with a lease request, the runtime:
 
 1. Finalizes the lease.
 2. Calls `CredentialProvisioner::issue`.
@@ -69,7 +85,9 @@ The wire credential shape is:
 The SDK treats `value` as secret: it is redacted from `Debug`, omitted from
 subscription fanout, and not included in job inventory responses.
 
-## Provisioner Implementations
+See [`examples/provisioned_credentials/`](../../examples/provisioned_credentials/).
+
+## Provisioner implementations
 
 Core defines only the vendor-neutral trait:
 
@@ -86,21 +104,13 @@ pub trait CredentialProvisioner: Send + Sync {
 }
 ```
 
-A LiteLLM-style implementation would translate:
+A gateway implementation should translate ARCP constraints to upstream spend
+caps, allowed model lists, and TTLs. Revocation should delete the upstream key.
 
-- `cost.budget` to the upstream spend cap.
-- `model.use` to the upstream allowed model list.
-- `expires_at` to the upstream TTL.
-
-Revocation should delete the upstream key. Transient revocation failures are
-retried by the runtime, and outstanding ids remain in the ledger until
-revocation succeeds.
-
-## Security Checklist
+## Security checklist
 
 - Do not log credential values.
 - Do not emit credential values in telemetry or subscription events.
-- Keep provisioner adapters outside core unless they are vendor neutral.
+- Keep provisioner adapters outside core unless they are vendor-neutral.
 - Reject or narrow delegated leases that exceed the parent envelope.
-- Translate upstream budget exhaustion into `BUDGET_EXHAUSTED` at the ARCP
-  boundary.
+- Translate upstream budget exhaustion into `BUDGET_EXHAUSTED` at the ARCP boundary.

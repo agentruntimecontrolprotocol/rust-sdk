@@ -13,10 +13,18 @@ keywords = ["arcp", "agent", "protocol", "runtime", "rfc"]
 categories = ["network-programming", "asynchronous", "api-bindings"]
 readme = "README.md"
 include = [
-    "src/**/*",
-    "examples/**/*",
+    "src/**/*.rs",
+    "src/store/schema.sql",
+    "docs/**/*.md",
+    "docs/diagrams/*.dot",
+    "docs/diagrams/*.svg",
+    "examples/**/*.rs",
+    "examples/**/README.md",
+    "tests/**/*.rs",
+    "tests/snapshots/*.snap",
     "Cargo.toml",
     "README.md",
+    "CONFORMANCE.md",
     "LICENSE-MIT",
     "LICENSE-APACHE",
     "CHANGELOG.md",

@@ -1,96 +1,115 @@
 # arcp
 
-Rust reference implementation of the **Agent Runtime Control Protocol (ARCP)** v1.1.
+Rust reference SDK for the **Agent Runtime Control Protocol (ARCP)** v1.1.
 
-The protocol is defined in [the ARCP spec](https://github.com/agentruntimecontrolprotocol/spec/blob/main/docs/draft-arcp-1.1.md).
-The crate's job is to make that document executable.
+[![Crates.io](https://img.shields.io/crates/v/arcp.svg)](https://crates.io/crates/arcp)
+[![Docs.rs](https://docs.rs/arcp/badge.svg)](https://docs.rs/arcp)
 
-> **Status:** v0.1, built across seven hard-gated phases (see the
-> `phase N: ...` commits). Per-section spec status lives in
-> [`CONFORMANCE.md`](./CONFORMANCE.md).
+The protocol is defined in the
+[ARCP v1.1 specification](https://github.com/agentruntimecontrolprotocol/spec/blob/main/docs/draft-arcp-1.1.md).
+This crate turns that wire contract into typed Rust APIs for clients,
+runtimes, transports, persistence, permissions, and testable in-process
+workflows.
 
-## What works today
+## Install
 
-- Envelope and message-type surface (RFC §6, §7) for every in-scope variant
-- Four-step authenticated handshake (§8.1) with `bearer`, `signed_jwt`,
-  and `none` schemes
-- Capability negotiation (intersection on accept)
-- Tool dispatch through a [`ToolHandler`](src/runtime/tools.rs) trait
-  that receives a [`ToolContext`](src/runtime/context.rs) carrying the
-  cancel token plus `request_human_input` / `request_human_choice`
-  round-trips (§10, §12)
-- Cooperative cancellation via `tokio_util::sync::CancellationToken`,
-  surfaced as `job.cancelled` on the wire when the handler honours it
-- SQLite event log (§6.4 idempotency, §13.3 backfill, §19 resume groundwork)
-- Artifact store (§16) with inline base64 put/fetch + retention sweep
-- Subscription manager (§13) with filter engine (session/trace/job/stream/
-  type/min-priority)
-- Two real transports (§22): WebSocket via `tokio-tungstenite` and stdio
-  via newline-delimited JSON over `AsyncRead` / `AsyncWrite`
-- Subscriptions wired through the runtime: `Session::subscribe(filter)`
-  returns a `SubscriptionHandle` that yields live envelopes from any
-  session sharing the runtime; cross-connection delivery is verified.
-- Artifacts wired through the runtime: `Session::put_artifact` /
-  `fetch_artifact` / `release_artifact` round-trip end-to-end.
-- 134 tests, all five gates clean across feature-flag combinations
-- 85% line coverage via `cargo llvm-cov` — see [`scripts/coverage.sh`](./scripts/coverage.sh)
+```toml
+[dependencies]
+arcp = "1.1"
+```
+
+Default features include WebSocket and stdio transports:
+
+```toml
+arcp = { version = "1.1", default-features = false, features = ["transport-ws"] }
+```
 
 ## Quickstart
 
-```bash
-cargo build
-cargo run -- version
+Run a local runtime over WebSocket:
 
-# Run an example
-cargo run --example 01_minimal_session
-cargo run --example 02_tool_invoke
-
-# Run a server (defaults: 127.0.0.1:7777, anonymous)
-cargo run -- serve
-# Or with a bearer token:
+```sh
 cargo run -- serve --bearer secret-token --principal alice@example.com
-
-# Coverage report (requires rustup + llvm-tools-preview component)
-cargo install cargo-llvm-cov
-rustup component add llvm-tools-preview
-scripts/coverage.sh                 # human-readable summary
-scripts/coverage.sh --html          # HTML report under target/llvm-cov
 ```
 
-## Architecture
+In another process, run one of the end-to-end examples:
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/architecture-dark.svg">
-  <img alt="ARCP Rust SDK architecture — arcp::client and arcp::runtime exchange tagged-enum messages (arcp::messages) over arcp::transport (websocket/stdio/memory); arcp::runtime is backed by the rusqlite event log arcp::store" src="docs/diagrams/architecture-light.svg">
-</picture>
+```sh
+cargo run --example submit_and_stream
+cargo run --example resumability
+cargo run --example delegation
+```
 
-## Crate features
+Use the CLI to confirm the crate and wire versions:
 
-| Feature           | Default | Notes                                              |
-| ----------------- | ------- | -------------------------------------------------- |
-| `transport-ws`    | yes     | WebSocket transport via `tokio-tungstenite`        |
-| `transport-stdio` | yes     | Newline-delimited JSON over `tokio::io::stdin/out` |
+```sh
+cargo run -- version
+```
 
-## Type-system invariants
+## Crate Layout
 
-The crate leans on Rust's type system to lift protocol invariants out of
-the runtime:
+- `arcp::client` - typed client session APIs.
+- `arcp::runtime` - server-side runtime, tool dispatch, jobs, leases, artifacts, subscriptions, and credentials.
+- `arcp::messages` - ARCP v1.1 message payloads and capability structures.
+- `arcp::envelope` - wire envelope, raw envelope, priority, and metadata.
+- `arcp::transport` - in-memory, WebSocket, and stdio transport implementations.
+- `arcp::auth` - bearer, signed JWT, and anonymous authenticators.
+- `arcp::store` - SQLite-backed event and credential ledgers.
+- `arcp::extensions` - core vs. vendor-extension namespace validation.
 
-- `Session<Unauthenticated>` cannot send protocol traffic; only
-  `Session<Authenticated>` (returned by `.authenticate()`) exposes
-  `.invoke()` etc. — RFC §4.6 ("authenticated by default") is a compile error.
-- `MessageType` is `#[serde(tag = "type", content = "payload")]`, so
-  `cargo build` enforces an exhaustive match on dispatch.
-- IDs are newtypes (`SessionId`, `MessageId`, `JobId`, …) that cannot be
-  mixed at the call site.
+## Documentation
 
-## What's intentionally deferred to v0.2
+- [Getting started](./docs/getting-started.md) - install, run, and wire a minimal client/runtime pair.
+- [Architecture](./docs/architecture.md) - how the crate modules fit together.
+- [Transports](./docs/transports.md) - WebSocket, stdio, and in-memory selection guide.
+- [CLI](./docs/cli.md) - `arcp version`, `arcp serve`, and current CLI limits.
+- [Guides](./docs/README.md#guides-one-per-spec-section) - spec-aligned guides for sessions, jobs, leases, delegation, errors, and extensions.
+- [Conformance](./CONFORMANCE.md) - section-by-section ARCP v1.1 coverage.
 
-See [`CONFORMANCE.md`](./CONFORMANCE.md) for the full per-section status.
-The big items: HTTP/2 + QUIC transports, mTLS + OAuth2 auth schemes,
-sidecar binary stream frames, scheduled jobs, multi-agent delegation /
-handoff / workflow primitives, trust elevation, checkpoint-based resume,
-heartbeat watchdog, hard-kill cancel escalation.
+## Examples
+
+Runnable examples live in [`examples/`](./examples/):
+
+- `submit_and_stream` - submit a job and consume lifecycle events.
+- `resumability` - replay events after reconnecting.
+- `job_subscribe` - subscribe to a job from another session.
+- `cost_budget` - enforce v1.1 lease budgets.
+- `provisioned_credentials` - issue and revoke lease-bound credentials.
+- `delegation` and `handoff` - spawn or transfer work across agents.
+- `stdio` and `axum_server` - host the runtime over different integration paths.
+
+## Feature Flags
+
+| Feature | Default | Purpose |
+| --- | --- | --- |
+| `transport-ws` | yes | WebSocket transport via `tokio-tungstenite`. |
+| `transport-stdio` | yes | Newline-delimited JSON over `tokio::io`. |
+
+## Conformance
+
+The SDK implements the core ARCP v1.1 surfaces for envelopes, sessions,
+authentication, jobs, event replay, subscriptions, cancellation, artifacts,
+leases, budgets, provisioned credentials, vendor extensions, and WebSocket /
+stdio / in-memory transports. Deferred surfaces are tracked in
+[`CONFORMANCE.md`](./CONFORMANCE.md).
+
+## Development
+
+```sh
+cargo fmt --all -- --check
+cargo check --all-targets --all-features
+cargo test --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+cargo publish --dry-run
+```
+
+Coverage uses `cargo-llvm-cov`:
+
+```sh
+cargo install cargo-llvm-cov
+rustup component add llvm-tools-preview
+scripts/coverage.sh
+```
 
 ## License
 
