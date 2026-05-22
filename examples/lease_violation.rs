@@ -46,7 +46,7 @@
 
 use std::env;
 
-use arcp::error::{ARCPError, ErrorCode};
+use arcp::error::ARCPError;
 use arcp::transport::MemoryTransport;
 use arcp::ARCPClient;
 use serde_json::json;
@@ -104,15 +104,14 @@ async fn scenario_over_reach(client: &Client) -> Result<(), ARCPError> {
     // Attempt a URL that is outside the granted scope.
     let result = agent_fetch(client, &job_id, "https://evil.example.net/data").await;
     match result {
-        Err(ARCPError::Custom {
-            code: ErrorCode::LeaseViolation,
-            ..
-        }) => {
+        Err(ARCPError::LeaseSubsetViolation { .. }) => {
             let reason = await_revoked_event(client, &lease_id).await?;
             println!("[over-reach] lease revoked with reason={reason} — expected");
         }
         other => {
-            return Err(format!("expected LeaseViolation but got {other:?}").into());
+            return Err(ARCPError::Unknown {
+                detail: format!("expected LeaseSubsetViolation but got {other:?}"),
+            });
         }
     }
     Ok(())
@@ -128,10 +127,7 @@ async fn scenario_expired_lease(client: &Client) -> Result<(), ARCPError> {
 
     let result = agent_fetch(client, &job_id, "https://example.com/data").await;
     match result {
-        Err(ARCPError::Custom {
-            code: ErrorCode::LeaseExpired,
-            ..
-        }) => {
+        Err(ARCPError::LeaseExpired { .. }) => {
             println!("[expired] access after expiry rejected — expected");
         }
         other => eprintln!("[expired] unexpected outcome: {other:?}"),

@@ -47,7 +47,8 @@
 use std::process::Stdio;
 
 use arcp::error::ARCPError;
-use arcp::transport::{MemoryTransport, StdioTransport};
+use arcp::transport::stdio::StdioTransport;
+use arcp::transport::MemoryTransport;
 use arcp::ARCPClient;
 use serde_json::json;
 use tokio::process::Command;
