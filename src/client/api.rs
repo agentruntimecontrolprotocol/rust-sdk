@@ -12,9 +12,9 @@ use crate::ids::{ArtifactId, JobId, MessageId, SessionId, SubscriptionId};
 use crate::messages::{
     ArtifactFetchPayload, ArtifactPutPayload, ArtifactRef, ArtifactReleasePayload, CancelPayload,
     CancelTargetKind, Capabilities, ClientIdentity, Credentials, JobAcceptedPayload,
-    JobCompletedPayload, JobFailedPayload,
-    MessageType, NackPayload, SessionAcceptedPayload, SessionOpenPayload, SubscribePayload,
-    SubscriptionFilter, SubscriptionSince, ToolInvokePayload, UnsubscribePayload,
+    JobCompletedPayload, JobFailedPayload, MessageType, NackPayload, SessionAcceptedPayload,
+    SessionOpenPayload, SubscribePayload, SubscriptionFilter, SubscriptionSince, ToolInvokePayload,
+    UnsubscribePayload,
 };
 use crate::transport::Transport;
 
@@ -616,7 +616,7 @@ impl<T: Transport + 'static> std::fmt::Debug for ARCPClient<T> {
 impl<T: Transport + 'static> ARCPClient<T> {
     /// Construct over an attached transport.
     #[must_use]
-    pub fn new(transport: T) -> Self {
+    pub const fn new(transport: T) -> Self {
         Self {
             transport: Some(transport),
         }
@@ -654,4 +654,3 @@ impl<T: Transport + 'static> ARCPClient<T> {
         })
     }
 }
-
