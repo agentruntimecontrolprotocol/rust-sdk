@@ -8,7 +8,7 @@ it demonstrates. Mirrors the Python tree at
 > crate as if it were a published `arcp = "1"`. Setup boilerplate
 > (transport URL, identity, auth) is elided with `let client: Client =
 > todo!();`. LLM and framework calls live in tiny stub modules
-> (`agents.rs`, `steps.rs`, `synth.rs`, …) so the protocol code in
+> (`agents.rs`, `steps.rs`, `synth.rs`, ...) so the protocol code in
 > `main.rs` is what you read.
 
 ## The fourteen
@@ -42,7 +42,7 @@ it demonstrates. Mirrors the Python tree at
   `[[example]]` in the workspace `Cargo.toml`.
 - `let client: Client = todo!();` literally — transport, identity, auth
   blocks are setup noise, not the point. Each example's allow header
-  permits the lints (`clippy::todo`, `unused_variables`, …) that
+  permits the lints (`clippy::todo`, `unused_variables`, ...) that
   illustration-grade code would otherwise trip.
 - Envelopes match RFC-0001 v2 exactly. Custom message types follow
   §21.1 `arcpx.<domain>.<name>.v<n>` naming.

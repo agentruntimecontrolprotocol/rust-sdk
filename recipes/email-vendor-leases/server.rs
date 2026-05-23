@@ -138,9 +138,9 @@ async fn triage_agent(
     //
     //     match validate_lease_op(ctx.lease(), "tool.call", &block.name) {
     //       Err(ARCPError::PermissionDenied { detail }) => {
-    //         // surface as recoverable error on the ARCP stream…
+    //         // surface as recoverable error on the ARCP stream...
     //         ctx.tool_result_err(&block.id, &detail).await?;
-    //         // …and feed denial back to Claude so it can adapt
+    //         // ...and feed denial back to Claude so it can adapt
     //         tool_results.push(tool_result_err(&block.id, &format!("denied: {detail}")));
     //         continue;
     //       }

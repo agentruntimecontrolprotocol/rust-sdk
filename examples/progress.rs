@@ -6,7 +6,7 @@
 //!
 //! Event kind: `"progress"`; body shape:
 //! ```json
-//! { "current": 40, "total": 100, "units": "files", "message": "indexing…" }
+//! { "current": 40, "total": 100, "units": "files", "message": "indexing..." }
 //! ```
 //!
 //! Run with:
