@@ -23,6 +23,14 @@ digraph RustSdkArchitecture {
     label=<<FONT POINT-SIZE="11"><B>arcp::messages</B></FONT><BR/><FONT POINT-SIZE="9" COLOR="#94A3B8">tagged-enum MessageType</FONT>>
   ];
 
+  Envelope [
+    label=<<FONT POINT-SIZE="11"><B>arcp::envelope</B></FONT><BR/><FONT POINT-SIZE="9" COLOR="#94A3B8">Envelope · ids · trace · priority</FONT>>
+  ];
+
+  Auth [
+    label=<<FONT POINT-SIZE="11"><B>arcp::auth</B></FONT><BR/><FONT POINT-SIZE="9" COLOR="#94A3B8">bearer · jwt · none</FONT>>
+  ];
+
   subgraph cluster_transport {
     label=<<TABLE BORDER="0" CELLBORDER="0" CELLPADDING="0" CELLSPACING="0"><TR><TD COLSPAN="3" HEIGHT="8"></TD></TR><TR><TD WIDTH="8"></TD><TD><FONT POINT-SIZE="12"><B>arcp::transport</B></FONT></TD><TD WIDTH="8"></TD></TR></TABLE>>;
     style="rounded,filled";
@@ -47,8 +55,10 @@ digraph RustSdkArchitecture {
   Client   -> Runtime  [dir=both, label="invoke / events"];
   Client   -> Messages;
   Runtime  -> Messages;
-  Messages -> Ws       [lhead=cluster_transport];
+  Messages -> Envelope [label="wrapped in"];
+  Envelope -> Ws       [lhead=cluster_transport];
 
   edge [color="#475569", penwidth=1.0];
+  Runtime -> Auth;
   Runtime -> Store;
 }

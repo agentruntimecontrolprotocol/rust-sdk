@@ -24,7 +24,8 @@ decrease. Consumers can subscribe to those events for live spend dashboards.
 The crate carries the protocol data needed for OpenTelemetry integration, but
 does not ship a native OTel middleware package. Applications can wrap
 transports or runtime handlers and propagate W3C trace context through
-`Envelope::extensions` under an `x-vendor.*` key.
+`Envelope::extensions` under a registered extension key (e.g.
+`arcpx.opentelemetry.tracecontext.v1`).
 
 ## Examples
 

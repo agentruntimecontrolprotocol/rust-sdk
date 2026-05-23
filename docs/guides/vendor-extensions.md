@@ -1,14 +1,22 @@
 # Vendor extensions (§15)
 
-ARCP reserves the core protocol surface and provides one extension namespace:
-`x-vendor.<vendor>.<name>`.
+ARCP reserves the core protocol surface; everything else lives in the
+extension namespace advertised via `Capabilities::extensions`. The SDK
+admits two extension naming forms:
+
+- `arcpx.<vendor-or-domain>[.<name>].v<n>` — recommended for new extensions
+  (matches the RFC's own `arcpx.example.v1` capability example).
+- `<reverse-dns>.<...>.v<n>` — e.g. `com.acme.workflow.v2`.
+
+The bare `x-` prefix is **reserved for transport-internal experimental
+fields** and MUST NOT be used in long-lived deployments; receivers MAY drop
+`x-` envelopes silently.
 
 Spec reference: [§15](../../../spec/docs/draft-arcp-1.1.md#15-iana-considerations).
 
 ## Extensible surfaces
 
-- Envelope `type`
-- Job event `kind`
+- Envelope `type` (custom message types)
 - Lease capability namespace
 - Envelope `extensions` object keys
 - Auth schemes implemented by custom authenticators
@@ -18,13 +26,16 @@ Spec reference: [§15](../../../spec/docs/draft-arcp-1.1.md#15-iana-consideratio
 Examples:
 
 ```text
-x-vendor.acme.cancel
-x-vendor.com.example.confidence
-x-vendor.opentelemetry.tracecontext
+arcpx.acme.cancel.v1
+com.example.confidence.v1
+arcpx.opentelemetry.tracecontext.v1
 ```
 
-The SDK classifies core, advertised vendor, unadvertised vendor, experimental,
-and malformed names through `ExtensionRegistry`.
+The SDK classifies a wire-level `type` string via `ExtensionRegistry::classify`
+into one of: `Core`, `KnownExtension` (registered/advertised),
+`UnknownExtension` (well-formed but not advertised), `ReservedExperimental`
+(`x-...`), or `Malformed`. Use `Capabilities::extensions` on `session.open` /
+`session.accepted` to advertise which extensions a peer supports.
 
 ## Round-trip behavior
 

@@ -9,7 +9,7 @@ in [`examples/`](../examples/).
 use arcp::auth::NoneAuthenticator;
 use arcp::messages::Capabilities;
 use arcp::runtime::ARCPRuntime;
-use arcp::transport::memory::MemoryTransport;
+use arcp::transport::paired;
 
 # async fn make_pair() -> Result<(), Box<dyn std::error::Error>> {
 let caps = Capabilities {
@@ -22,7 +22,7 @@ let runtime = ARCPRuntime::builder()
     .build()
     .await?;
 
-let (client_transport, runtime_transport) = MemoryTransport::pair();
+let (client_transport, runtime_transport) = paired();
 let _server = runtime.serve_connection(runtime_transport);
 # let _ = client_transport;
 # Ok(())

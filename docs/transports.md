@@ -5,12 +5,13 @@ Rust SDK includes in-memory, WebSocket, and stdio implementations.
 
 ## In-memory
 
-`MemoryTransport::pair()` returns two connected transport halves:
+`arcp::transport::paired()` returns two connected `MemoryTransport` halves:
+sending on one arrives on the other.
 
 ```rust
-use arcp::transport::memory::MemoryTransport;
+use arcp::transport::paired;
 
-let (client_side, runtime_side) = MemoryTransport::pair();
+let (client_side, runtime_side) = paired();
 ```
 
 Use it for:

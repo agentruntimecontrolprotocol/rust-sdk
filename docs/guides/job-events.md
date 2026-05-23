@@ -4,40 +4,56 @@ Job events are the stream of observable work emitted while a job runs.
 
 Spec reference: [§8](../../../spec/docs/draft-arcp-1.1.md#8-job-events).
 
-## Reserved event kinds
+## Reserved event types
 
-The Rust SDK represents the standard ARCP event shapes in
-`arcp::messages::execution` and related modules:
+The Rust SDK represents the standard ARCP event shapes as variants of
+`MessageType` (`arcp::messages`). Wire-level type strings — what appears in
+the envelope's `type` field — are:
 
-| Kind | Purpose |
+| Type | Purpose |
 | --- | --- |
-| `log` | Human-readable log line with level and attributes. |
-| `thought` | Reasoning or internal agent note when a deployment exposes it. |
-| `tool_call` | Agent requested a tool operation. |
-| `tool_result` | Tool operation result or structured ARCP error. |
-| `status` | Lifecycle status such as running or progress. |
-| `metric` | Numeric measurement. |
-| `artifact_ref` | Reference to externally or runtime-stored artifact. |
-| `delegate` | Child job request. |
+| `log` | Human-readable log line with level and attributes (`LogPayload`). |
+| `metric` | Numeric measurement (`MetricPayload`). |
+| `trace.span` | Span emitted for distributed tracing (`TraceSpanPayload`). |
+| `tool.invoke` | Agent requested a tool operation. |
+| `tool.result` | Tool operation result. |
+| `tool.error` | Structured tool failure. |
+| `job.started` | Job entered the running state. |
+| `job.progress` | Optional `percent`/`message` progress update (`JobProgressPayload`). |
+| `job.heartbeat` | Liveness signal from a long-running job (`JobHeartbeatPayload`). |
+| `job.result_chunk` | One fragment of a streamed final result (ARCP v1.1 §8.4). |
+| `job.completed` / `job.failed` / `job.cancelled` | Terminal outcomes. |
+| `artifact.ref` | Reference to a runtime-stored artifact. |
+| `agent.delegate` | Child job request (`AgentDelegatePayload`). |
+| `agent.handoff` | Hand work to another agent (`AgentHandoffPayload`). |
+| `event.emit` | Generic carrier for namespaced custom events. |
 
 ## Progress
 
-Progress is represented as structured status data and demonstrated in
+`job.progress` is the structured progress message; see
 [`examples/progress.rs`](../../examples/progress.rs).
 
 ## Result chunks
 
-Large results can be chunked with `result.chunk` and completed with a terminal
-result reference. The SDK validates ordering, encoding, and terminal behavior.
+Large results stream as `job.result_chunk` envelopes terminated by a
+`job.completed` carrying the same `result_id`. `ResultChunkAssembler`
+(in `arcp::messages`) validates ordering, encoding, and the terminal
+boundary.
 
 See [`examples/result_chunk/`](../../examples/result_chunk/).
 
 ## Sequence numbers
 
-`event_seq` is session-scoped. One strictly increasing counter spans every job
-in the session, which lets ack and resume use a single high-water mark.
+`event_seq` is session-scoped. One strictly increasing counter spans every
+countable envelope in the session (handshake, heartbeat, and ack envelopes
+are not counted — see `MessageType::is_countable_event`), which lets ack
+and resume use a single high-water mark.
 
-## Vendor event kinds
+## Vendor event types
 
-Custom events must use `x-vendor.*` names. The extension registry classifies
-core, advertised vendor, unadvertised vendor, experimental, and malformed names.
+Per RFC §21.1 extension `type` strings follow `arcpx.<vendor>.<name>.v<n>`
+or a reverse-DNS form such as `com.acme.workflow.v2`. The bare `x-` prefix
+is reserved for transport-internal experimental fields and MUST NOT be
+used in long-lived deployments. `ExtensionRegistry` classifies a `type`
+string as core, known extension, unknown extension, experimental, or
+malformed.

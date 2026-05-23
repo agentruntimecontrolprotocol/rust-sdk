@@ -337,21 +337,35 @@ match run_job(&transport, session_id.clone()).await {
 
 ## Feature support
 
-ARCP features this SDK negotiates during the `hello`/`welcome` handshake:
+`Capabilities` (RFC §7) is the negotiated feature set, exchanged on
+`session.open` / `session.accepted`. The Rust SDK implements the following
+capability fields:
 
-| Feature flag | Status |
+| `Capabilities` field | Status |
 |---|---|
-| `heartbeat` | Supported |
-| `ack` | Supported |
-| `list_jobs` | Supported |
-| `subscribe` | Supported |
-| `lease_expires_at` | Supported |
-| `cost.budget` | Supported |
-| `model.use` | Supported |
+| `streaming` | Supported |
+| `durable_jobs` | Supported |
+| `checkpoints` | Not implemented (deferred) |
+| `binary_streams` | Not implemented (deferred) |
+| `agent_handoff` | Supported |
+| `model_use` | Supported |
 | `provisioned_credentials` | Supported |
-| `progress` | Supported |
-| `result_chunk` | Supported |
-| `agent_versions` | Supported |
+| `artifacts` | Supported |
+| `subscriptions` | Supported |
+| `scheduled_jobs` | Not implemented (deferred) |
+| `interrupt` | Supported |
+| `anonymous` | Supported |
+| `heartbeat_recovery` | Supported (`"fail"` / `"block"`) |
+| `binary_encoding` | Advertised; payloads remain JSON |
+| `extensions` | Supported |
+| `artifact_retention` | Supported |
+| `agents` | Supported (v1.0 flat list and v1.1 rich form) |
+
+The SDK also implements the ARCP v1.1 protocol-level surfaces that are not
+themselves capability flags: `session.ack` flow control (§6.5),
+`session.ping`/`pong` heartbeats (§6.4), `session.list_jobs` (§6.6),
+`job.subscribe`/`job.unsubscribe` (§7.6), `job.progress`,
+`job.result_chunk` (§8.4), and `agent@version` resolution (§7.5).
 
 ## Transport
 

@@ -34,9 +34,10 @@ See [`examples/cancellation.rs`](../../examples/cancellation.rs).
 
 ## Idempotency
 
-Use idempotency keys when retrying submit after a client crash or reconnect. A
-duplicate request with identical content collapses to the original job; a key
-collision with different content returns `DUPLICATE_KEY`.
+Set `Envelope::idempotency_key` (§6.4) when retrying submit after a client
+crash or reconnect. A duplicate request with identical content collapses to
+the original job; a key collision with different content surfaces as
+`ALREADY_EXISTS`.
 
 See [`examples/idempotent_retry.rs`](../../examples/idempotent_retry.rs).
 

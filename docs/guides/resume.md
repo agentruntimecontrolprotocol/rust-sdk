@@ -29,8 +29,9 @@ events after a session boundary.
 
 ## Failure modes
 
-- `RESUME_WINDOW_EXPIRED` means the runtime no longer has enough buffered
-  history for the session.
-- `INVALID_REQUEST` means the resume tuple is malformed or claims an impossible
-  sequence boundary.
-- An in-memory event log loses resume history on restart.
+- `DATA_LOSS` means the runtime no longer has the buffered history needed to
+  serve the requested `event_seq` (retention swept).
+- `INVALID_ARGUMENT` means the resume tuple is malformed or claims an
+  impossible sequence boundary.
+- An in-memory event log loses resume history on restart; use a file-backed
+  log for restart-tolerant resume.

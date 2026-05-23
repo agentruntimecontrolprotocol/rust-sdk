@@ -1,7 +1,8 @@
 # Sessions (§6)
 
 A session is a long-lived ARCP context over one transport. It starts with a
-handshake, carries job traffic, and ends with `session.bye` or transport close.
+handshake, carries job traffic, and ends with `session.close` or transport
+drop.
 
 Spec reference: [§6](../../../spec/docs/draft-arcp-1.1.md#6-sessions).
 
@@ -36,8 +37,8 @@ See [`examples/ack_backpressure.rs`](../../examples/ack_backpressure.rs).
 
 ## Heartbeat
 
-`session.heartbeat` and `session.pong` keep long-lived sessions fresh and
-detect stalled peers. See
+`session.ping` and `session.pong` (ARCP v1.1 §6.4) keep long-lived sessions
+fresh and detect stalled peers. See
 [`examples/session_heartbeat/`](../../examples/session_heartbeat/).
 
 ## Listing and subscribing
@@ -54,5 +55,7 @@ See [`examples/session_list_jobs/`](../../examples/session_list_jobs/) and
 
 ## Closing
 
-Either side may send `session.bye`. After close, job-scoped traffic must stop
-and the transport should be closed by the owner.
+Either side may send `session.close` (`SessionClosePayload`). After close,
+job-scoped traffic must stop and the transport should be closed by the
+owner. In-flight jobs continue server-side and remain resumable until the
+runtime's retention window expires.
