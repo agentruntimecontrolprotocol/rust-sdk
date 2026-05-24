@@ -88,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             MessageType::JobAccepted(p) => println!("accepted: {}", p.job_id),
             MessageType::JobCompleted(p) => { println!("done: {:?}", p.value); break; }
             MessageType::JobFailed(p) => return Err(format!("{}: {}", p.code, p.message).into()),
-            other => println!("[seq={:?}] {}", env.event_seq, other.type_name()),
+            other => println!("[msg_id={}] {}", env.id, other.type_name()),
         }
     }
     transport.close().await?;
@@ -141,7 +141,7 @@ let MessageType::SessionAccepted(welcome) = transport.recv().await?.ok_or("eof")
 let session_id = welcome.session_id.clone();
 let mut last_seq: u64 = 0;
 
-// ... read envelopes, tracking the highest env.event_seq in `last_seq` ...
+// ... read envelopes, tracking the highest countable sequence in `last_seq` ...
 // ... transport drops ...
 
 // Reconnect on a fresh transport and resume from `last_seq`:
@@ -200,9 +200,9 @@ use arcp::Envelope;
 
 let mut last_seq: u64 = 0;
 while let Some(env) = transport.recv().await? {
-    if let Some(seq) = env.event_seq {
-        last_seq = seq;
-    }
+    // Track the highest countable sequence in your own application state.
+    // let seq = highest_countable_sequence_from_your_runtime();
+    // last_seq = seq;
     match env.payload {
         MessageType::Log(p) => println!("[log {:?}] {}", p.level, p.message),
         MessageType::Metric(m) => println!("metric[{}] = {} {}", m.name, m.value, m.unit),
@@ -378,7 +378,7 @@ Full API reference — every type, method, and event payload — is in [`docs/`]
 
 ## Versioning and compatibility
 
-This SDK speaks **ARCP v1.1 (draft)**. The SDK follows semantic versioning independently of the protocol; the protocol version it negotiates is shown above and in `session.hello`. A runtime advertising a different ARCP MAJOR is not guaranteed compatible. Feature mismatches degrade gracefully: the effective feature set is the intersection of what the client and runtime advertise, and the SDK will not use a feature outside it.
+This SDK speaks **ARCP v1.1 (draft)**. The SDK follows semantic versioning independently of the protocol; the protocol version it negotiates is shown above and in `session.accepted`. A runtime advertising a different ARCP MAJOR is not guaranteed compatible. Feature mismatches degrade gracefully: the effective feature set is the intersection of what the client and runtime advertise, and the SDK will not use a feature outside it.
 
 ## Contributing
 

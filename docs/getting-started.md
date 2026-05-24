@@ -38,14 +38,14 @@ advertises anonymous auth.
 
 ## Run examples
 
-Examples are the fastest way to see client/runtime flows. Some are compact
-illustrations with setup elided; the integration tests under [`tests/`](../tests/)
-show fully exercised paths.
+Examples are the fastest way to see client/runtime flows. The commands
+below point at runnable demos with real setup; the integration tests under
+[`tests/`](../tests/) show fully exercised paths.
 
 ```sh
-cargo run --example submit_and_stream
-cargo run --example resumability
-cargo run --example job_subscribe
+cargo run --example session_ack
+cargo run --example result_chunk
+cargo run --example session_list_jobs
 cargo run --example cost_budget
 cargo run --example provisioned_credentials
 ```

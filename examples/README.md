@@ -1,17 +1,19 @@
 # ARCP Rust examples
 
-Fourteen single-purpose codebases, each named for the protocol primitive
+Thirteen single-purpose codebases, each named for the protocol primitive
 it demonstrates. Mirrors the Python tree at
 [`python-sdk/examples/`](https://github.com/agentruntimecontrolprotocol/python-sdk/tree/main/examples).
 
-> **Illustrative, not runnable.** Each example imports the in-repo `arcp`
+> **Mostly illustrative.** Most examples import the in-repo `arcp`
 > crate as if it were a published `arcp = "1"`. Setup boilerplate
 > (transport URL, identity, auth) is elided with `let client: Client =
 > todo!();`. LLM and framework calls live in tiny stub modules
 > (`agents.rs`, `steps.rs`, `synth.rs`, ...) so the protocol code in
-> `main.rs` is what you read.
+> `main.rs` is what you read. The runnable end-to-end examples are the
+> concrete demos with real runtime setup, such as `session_ack`,
+> `result_chunk`, and `session_list_jobs`.
 
-## The fourteen
+## The thirteen
 
 | Example | Demonstrates | Spec |
 |---|---|---|
@@ -65,6 +67,6 @@ For a brisk tour: `subscriptions`, `leases`, `delegation`,
 
 ## Numbered companions
 
-`01_minimal_session.rs` and `02_tool_invoke.rs` predate this index;
-they're a runnable end-to-end against the in-process runtime + memory
-transport. The fourteen above are illustrative.
+The examples above are illustrative. The runnable end-to-end demos are
+the concrete runtime-backed examples in this tree, including
+`session_ack`, `result_chunk`, and `session_list_jobs`.
