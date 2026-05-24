@@ -223,6 +223,40 @@ impl std::fmt::Debug for ARCPRuntime {
 
 impl ARCPRuntime {
     /// Construct via [`RuntimeBuilder`].
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use arcp::auth::BearerAuthenticator;
+    /// use arcp::messages::{AuthScheme, Capabilities, ClientIdentity, Credentials};
+    /// use arcp::runtime::ARCPRuntime;
+    /// use arcp::transport::paired;
+    /// use arcp::ARCPClient;
+    ///
+    /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+    /// let runtime = ARCPRuntime::builder()
+    ///     .with_authenticator(Box::new(BearerAuthenticator::new().with_token("tok", "alice")))
+    ///     .build()
+    ///     .await?;
+    /// let (server_t, client_t) = paired();
+    /// let _server = runtime.serve_connection(server_t);
+    ///
+    /// let _session = ARCPClient::new(client_t)
+    ///     .open()?
+    ///     .authenticate(
+    ///         Credentials { scheme: AuthScheme::Bearer, token: Some("tok".into()) },
+    ///         ClientIdentity {
+    ///             kind: "demo-client".into(),
+    ///             version: "1.0.0".into(),
+    ///             fingerprint: None,
+    ///             principal: None,
+    ///         },
+    ///         Capabilities::default(),
+    ///     )
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     #[must_use]
     pub fn builder() -> RuntimeBuilder {
         RuntimeBuilder::new()

@@ -5,6 +5,22 @@
 //! minimal: send one envelope, receive the next, close when done. Higher-
 //! level concerns (idempotency, ordering, backpressure) live above this
 //! layer.
+//!
+//! ## Examples
+//!
+//! ```rust
+//! use arcp::messages::{MessageType, PingPayload};
+//! use arcp::transport::{paired, Transport};
+//! use arcp::Envelope;
+//!
+//! # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+//! let (sender, receiver) = paired();
+//! sender.send(Envelope::new(MessageType::Ping(PingPayload::default()))).await?;
+//! let env = receiver.recv().await?.expect("envelope");
+//! assert_eq!(env.payload.type_name(), "ping");
+//! # Ok(())
+//! # }
+//! ```
 
 use async_trait::async_trait;
 

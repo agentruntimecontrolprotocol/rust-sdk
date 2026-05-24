@@ -12,7 +12,9 @@ Spec reference: [§7](../../../spec/docs/draft-arcp-1.1.md#7-jobs).
 submit-and-await flows. It sends a job request, waits for acceptance, and
 resolves on the terminal result.
 
-See [`examples/submit_and_stream.rs`](../../examples/submit_and_stream.rs).
+See the illustrative [`examples/submit_and_stream.rs`](../../examples/submit_and_stream.rs)
+for the submit-and-await shape, and the runnable [`examples/result_chunk/`](../../examples/result_chunk/)
+for an end-to-end streaming demo.
 
 ## Runtime dispatch
 

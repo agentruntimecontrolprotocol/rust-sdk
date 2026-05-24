@@ -17,6 +17,16 @@
 //!
 //! The two are interconvertible via [`Envelope::into_raw`] /
 //! [`RawEnvelope::try_into_typed`].
+//!
+//! ## Examples
+//!
+//! ```rust
+//! use arcp::messages::{MessageType, PingPayload};
+//! use arcp::Envelope;
+//!
+//! let env = Envelope::new(MessageType::Ping(PingPayload::default()));
+//! assert_eq!(env.payload.type_name(), "ping");
+//! ```
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

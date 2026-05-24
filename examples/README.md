@@ -25,7 +25,7 @@ it demonstrates. Mirrors the Python tree at
 | [`handoff/`](./handoff) | `agent.handoff` with transcript packed as an artifact, runtime fingerprint pinned. | §14, §16, §8.3 |
 | [`heartbeats/`](./heartbeats) | Worker federation; heartbeat-loss reroute via `idempotency_key`. | §10.3, §6.4 |
 | [`capability_negotiation.rs`](./capability_negotiation.rs) | Capability-driven peer routing; standard `cost.usd` rollups. | §7, §17.3.1, §18.3 |
-| [`resumability/`](./resumability) | **Real crash and resume.** `std::process::exit(137)` mid-flight; second invocation picks up at the next step. | §10, §19, §6.4 |
+| [`resumability/`](./resumability) | **Illustrative crash and replay.** Shows the two-step flow, but still contains placeholder setup. | §10, §19, §6.4 |
 | [`reasoning_streams/`](./reasoning_streams) | `kind: thought` stream + a peer runtime that subscribes and delegates critiques back. | §11.4, §13, §14 |
 | [`extensions.rs`](./extensions.rs) | Custom `arcpx.sdr.*.v1` extension namespace + unknown-message handling. | §21 |
 | [`cancellation.rs`](./cancellation.rs) | Cooperative `cancel` (terminate) vs `interrupt` (pause and ask). | §10.4–§10.5 |
@@ -62,8 +62,9 @@ it demonstrates. Mirrors the Python tree at
 ## Reading order
 
 For a brisk tour: `subscriptions`, `leases`, `delegation`,
-`resumability` (this one actually crashes and recovers), `cancellation`,
-`extensions`, `mcp`. These seven exercise the bulk of the protocol.
+`resumability` (illustrative only), `cancellation`, `extensions`,
+`mcp`. These six exercise the bulk of the protocol, plus the
+placeholder-heavy `resumability` sketch.
 
 ## Numbered companions
 

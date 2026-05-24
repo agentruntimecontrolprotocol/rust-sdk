@@ -24,8 +24,11 @@ session.
 
 ## Example
 
-[`examples/resumability/`](../../examples/resumability/) demonstrates replaying
-events after a session boundary.
+[`examples/resumability/`](../../examples/resumability/) sketches the replay
+flow after a session boundary, but it is illustrative and still contains
+placeholder setup. Use the runnable [`examples/session_ack/`](../../examples/session_ack/)
+and [`examples/result_chunk/`](../../examples/result_chunk/) demos for concrete
+client/runtime flows.
 
 ## Failure modes
 

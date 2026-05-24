@@ -615,6 +615,20 @@ impl<T: Transport + 'static> std::fmt::Debug for ARCPClient<T> {
 
 impl<T: Transport + 'static> ARCPClient<T> {
     /// Construct over an attached transport.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use arcp::transport::paired;
+    /// use arcp::ARCPClient;
+    ///
+    /// # fn main() -> Result<(), arcp::ARCPError> {
+    /// let (_server_t, client_t) = paired();
+    /// let client = ARCPClient::new(client_t).open()?;
+    /// let _ = client;
+    /// # Ok(())
+    /// # }
+    /// ```
     #[must_use]
     pub const fn new(transport: T) -> Self {
         Self {
