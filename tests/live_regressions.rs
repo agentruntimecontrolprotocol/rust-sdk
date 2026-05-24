@@ -424,10 +424,333 @@ async fn issue_59_idempotency_key_replays_existing_job_ack() {
 }
 
 #[test]
-fn issue_60_readme_snippets_do_not_reference_missing_envelope_fields() {
+fn issue_60_readme_event_seq_reference_resolves_to_real_envelope_field() {
+    // The README walkthrough reads `env.event_seq` to track the highest
+    // session-scoped sequence across reconnects (§6.5 / §6.6). That
+    // field MUST resolve to a real Option<u64> on Envelope so the
+    // documented usage actually compiles.
+    let env = Envelope::new(MessageType::SessionAck(arcp::messages::SessionAckPayload {
+        last_processed_seq: 0,
+    }));
+    // Compile-time evidence that the documented API matches the type:
+    // if event_seq is removed or renamed, this stops compiling and the
+    // regression breaks at build, not in production.
+    let _: Option<u64> = env.event_seq;
+
     let readme = include_str!("../README.md");
     assert!(
-        !readme.contains("env.event_seq"),
-        "README snippets should not reference Envelope::event_seq until the API exists"
+        readme.contains("env.event_seq"),
+        "README walkthrough should keep documenting Envelope::event_seq now that the field exists"
+    );
+
+    // The getting-started example must not point users at binaries
+    // whose top-level path still contains `todo!()` placeholders.
+    let getting_started = include_str!("../docs/getting-started.md");
+    for binary in ["submit_and_stream", "resumability"] {
+        let header = format!("cargo run --example {binary}");
+        if getting_started.contains(&header) {
+            let path = format!("examples/{binary}.rs");
+            let direct = std::fs::read_to_string(&path).ok();
+            let nested = std::fs::read_to_string(format!("examples/{binary}/main.rs")).ok();
+            let body = direct.or(nested).unwrap_or_default();
+            assert!(
+                !body.contains("todo!()"),
+                "getting-started.md tells users to run `{header}` but {binary} still has todo!() in the top-level path",
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #61: focused regression tests for the low-coverage critical paths.
+// These mirror the gap list in the audit (client/api.rs pending cleanup
+// across artifact + subscribe entry points, runtime authorization for
+// the positive cancel path, ack-window normalization, and idempotency
+// across connections) and intentionally exercise edge cases the live
+// regressions above did not cover.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn issue_61_put_artifact_returns_unavailable_when_runtime_drops() {
+    let runtime = ARCPRuntime::builder()
+        .with_authenticator(Box::new(BearerAuthenticator::new().with_token("t", "p")))
+        .build()
+        .await
+        .expect("build");
+    let (server_t, client_t) = paired();
+    let handle = runtime.serve_connection(server_t);
+    let session = ARCPClient::new(client_t)
+        .open()
+        .expect("open")
+        .authenticate(
+            Credentials {
+                scheme: AuthScheme::Bearer,
+                token: Some("t".into()),
+            },
+            client_identity("client"),
+            Capabilities::default(),
+        )
+        .await
+        .expect("auth");
+
+    // Drop the server task so the runtime side of the transport closes.
+    handle.abort();
+    let _ = handle.await;
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        session.put_artifact("text/plain", "aGVsbG8=", None),
+    )
+    .await
+    .expect("put_artifact must resolve instead of hanging");
+    assert!(result.is_err(), "put_artifact on dead transport must error");
+}
+
+#[tokio::test]
+async fn issue_61_subscribe_returns_unavailable_when_runtime_drops() {
+    let runtime = ARCPRuntime::builder()
+        .with_authenticator(Box::new(BearerAuthenticator::new().with_token("t", "p")))
+        .build()
+        .await
+        .expect("build");
+    let (server_t, client_t) = paired();
+    let handle = runtime.serve_connection(server_t);
+    let session = ARCPClient::new(client_t)
+        .open()
+        .expect("open")
+        .authenticate(
+            Credentials {
+                scheme: AuthScheme::Bearer,
+                token: Some("t".into()),
+            },
+            client_identity("client"),
+            Capabilities::default(),
+        )
+        .await
+        .expect("auth");
+    handle.abort();
+    let _ = handle.await;
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        session.subscribe(arcp::messages::SubscriptionFilter::default()),
+    )
+    .await
+    .expect("subscribe must resolve instead of hanging");
+    assert!(result.is_err(), "subscribe on dead transport must error");
+}
+
+#[tokio::test]
+async fn issue_61_owning_session_can_cancel_its_own_job() {
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let runtime = ARCPRuntime::builder()
+        .with_authenticator(Box::new(BearerAuthenticator::new().with_token("t", "p")))
+        .with_tools(
+            ToolRegistryBuilder::new()
+                .with(Arc::new(SlowTool {
+                    events: events_tx,
+                    delay: Duration::from_secs(5),
+                }))
+                .build(),
+        )
+        .build()
+        .await
+        .expect("build");
+    let (client, session_id) = open_session(&runtime, "t", "client").await;
+    let job_id = submit_slow_job(&client, &session_id).await;
+    // Wait until the tool actually starts so cancel isn't racing
+    // job.accepted.
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), events_rx.recv())
+            .await
+            .expect("started"),
+        Some("started")
+    );
+
+    let mut cancel = Envelope::new(MessageType::Cancel(CancelPayload {
+        target: CancelTargetKind::Job,
+        target_id: job_id.to_string(),
+        reason: Some("user".into()),
+        deadline_ms: None,
+    }));
+    cancel.session_id = Some(session_id);
+    client.send(cancel).await.expect("send cancel");
+
+    let response = recv_until(&client, |env| {
+        matches!(
+            env.payload,
+            MessageType::CancelAccepted(_) | MessageType::CancelRefused(_)
+        )
+    })
+    .await;
+    assert!(
+        matches!(response.payload, MessageType::CancelAccepted(_)),
+        "owning session's cancel must be accepted, got {:?}",
+        response.payload
+    );
+    // The runtime's per-job task races the cancel token against the
+    // handler future, so the tool's own "cancelled" event isn't
+    // guaranteed; the wire-level job.cancelled IS — it's the canonical
+    // terminal signal we promise callers.
+    let terminal = tokio::time::timeout(
+        Duration::from_secs(1),
+        recv_until(&client, |env| {
+            matches!(env.payload, MessageType::JobCancelled(_))
+        }),
+    )
+    .await
+    .expect("job.cancelled must follow cancel.accepted within deadline");
+    assert!(matches!(terminal.payload, MessageType::JobCancelled(_)));
+    // events_rx may or may not carry the tool-internal "cancelled" tag;
+    // either is acceptable, so drain without asserting.
+    drop(events_rx);
+}
+
+#[tokio::test]
+async fn issue_61_ack_window_zero_is_normalized_and_does_not_deadlock() {
+    // with_ack_window(0) used to install an unsatisfiable gate so the
+    // very first countable event hung the writer. The builder must
+    // normalize 0 to "disabled" instead.
+    let runtime = ARCPRuntime::builder()
+        .with_authenticator(Box::new(BearerAuthenticator::new().with_token("t", "p")))
+        .with_tools(ToolRegistryBuilder::new().with(Arc::new(EchoTool)).build())
+        .with_ack_window(0)
+        .build()
+        .await
+        .expect("build");
+    let (client, session_id) = open_session(&runtime, "t", "client").await;
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "echo",
+        serde_json::json!({"ok": true}),
+    )));
+    invoke.session_id = Some(session_id);
+    client.send(invoke).await.expect("send invoke");
+    let completed = tokio::time::timeout(
+        Duration::from_secs(2),
+        recv_until(&client, |env| {
+            matches!(env.payload, MessageType::JobCompleted(_))
+        }),
+    )
+    .await
+    .expect("ack_window(0) must not deadlock the writer");
+    assert!(matches!(completed.payload, MessageType::JobCompleted(_)));
+}
+
+#[tokio::test]
+async fn issue_61_idempotency_key_replays_across_independent_connections() {
+    // Retrying the same logical command after a reconnect under the
+    // same principal must resolve to the original job (§6.4) rather
+    // than spawning a duplicate.
+    let runtime = ARCPRuntime::builder()
+        .with_authenticator(Box::new(
+            BearerAuthenticator::new().with_token("t", "alice"),
+        ))
+        .with_tools(ToolRegistryBuilder::new().with(Arc::new(EchoTool)).build())
+        .build()
+        .await
+        .expect("build");
+    let (first, first_session) = open_session(&runtime, "t", "client").await;
+    let key = IdempotencyKey::new("xact-92").expect("non-empty key");
+
+    let mut first_invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "echo",
+        serde_json::json!({"once": true}),
+    )));
+    first_invoke.session_id = Some(first_session);
+    first_invoke.idempotency_key = Some(key.clone());
+    first.send(first_invoke).await.expect("send first invoke");
+    let first_ack = recv_until(&first, |env| {
+        matches!(env.payload, MessageType::JobAccepted(_))
+    })
+    .await;
+    let MessageType::JobAccepted(first_payload) = first_ack.payload else {
+        unreachable!("predicate selected job.accepted");
+    };
+    drop(first);
+
+    // Open a fresh connection (same principal) and replay.
+    let (second, second_session) = open_session(&runtime, "t", "client").await;
+    let mut retry = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "echo",
+        serde_json::json!({"once": true}),
+    )));
+    retry.session_id = Some(second_session);
+    retry.idempotency_key = Some(key);
+    second.send(retry).await.expect("send retry");
+    let retry_ack = recv_until(&second, |env| {
+        matches!(env.payload, MessageType::JobAccepted(_))
+    })
+    .await;
+    let MessageType::JobAccepted(retry_payload) = retry_ack.payload else {
+        unreachable!("predicate selected job.accepted");
+    };
+    assert_eq!(
+        retry_payload.job_id, first_payload.job_id,
+        "idempotency key must replay across connections under the same principal"
+    );
+}
+
+#[tokio::test]
+async fn issue_61_idempotency_key_with_conflicting_payload_is_refused() {
+    // Same principal + same key + DIFFERENT command intent must be
+    // refused rather than transparently rewriting the prior job.
+    let runtime = ARCPRuntime::builder()
+        .with_authenticator(Box::new(
+            BearerAuthenticator::new().with_token("t", "alice"),
+        ))
+        .with_tools(ToolRegistryBuilder::new().with(Arc::new(EchoTool)).build())
+        .build()
+        .await
+        .expect("build");
+    let (client, session_id) = open_session(&runtime, "t", "client").await;
+    let key = IdempotencyKey::new("xact-93").expect("non-empty key");
+
+    let mut first = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "echo",
+        serde_json::json!({"value": 1}),
+    )));
+    first.session_id = Some(session_id.clone());
+    first.idempotency_key = Some(key.clone());
+    client.send(first).await.expect("send first");
+    let _accepted = recv_until(&client, |env| {
+        matches!(env.payload, MessageType::JobAccepted(_))
+    })
+    .await;
+
+    let mut conflict = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "echo",
+        serde_json::json!({"value": 2}),
+    )));
+    conflict.session_id = Some(session_id);
+    conflict.idempotency_key = Some(key);
+    client.send(conflict).await.expect("send conflict");
+    let response = recv_until(&client, |env| {
+        matches!(
+            env.payload,
+            MessageType::JobFailed(_) | MessageType::JobAccepted(_)
+        )
+    })
+    .await;
+    let MessageType::JobFailed(failed) = response.payload else {
+        panic!(
+            "conflicting idempotency payload must be refused, got {:?}",
+            response.payload
+        );
+    };
+    assert_eq!(failed.code, arcp::error::ErrorCode::FailedPrecondition);
+}
+
+#[test]
+fn issue_61_envelope_event_seq_is_omitted_when_unset() {
+    // Locally constructed envelopes (i.e. anything not yet emitted by a
+    // runtime writer) must not carry a synthetic event_seq, otherwise
+    // wire-level equality and replay diffing break.
+    let env = Envelope::new(MessageType::SessionAck(arcp::messages::SessionAckPayload {
+        last_processed_seq: 0,
+    }));
+    let wire = serde_json::to_value(&env).expect("serialize");
+    assert!(
+        wire.get("event_seq").is_none(),
+        "event_seq must be elided when unstamped, got {wire}"
     );
 }

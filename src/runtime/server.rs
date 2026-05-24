@@ -23,6 +23,7 @@ use crate::auth::{AuthOutcome, AuthRegistry, Authenticator};
 use crate::envelope::Envelope;
 use crate::error::{ARCPError, ErrorCode};
 use crate::extensions::ExtensionRegistry;
+use crate::ids::IdempotencyKey;
 use crate::ids::SubscriptionId;
 use crate::ids::{JobId, MessageId, SessionId};
 use crate::messages::{
@@ -127,9 +128,13 @@ impl RuntimeBuilder {
     /// `emitted - last_processed_seq >= window` and resume on the next
     /// `session.ack`. Set to `None` (default) to disable window-based
     /// flow control entirely.
+    ///
+    /// A window of `0` makes the gate immediately unsatisfiable for the
+    /// very first countable event and is normalized to `None`
+    /// (disabled) rather than installing a guaranteed deadlock.
     #[must_use]
     pub const fn with_ack_window(mut self, window: u64) -> Self {
-        self.ack_window = Some(window);
+        self.ack_window = if window == 0 { None } else { Some(window) };
         self
     }
 
@@ -177,6 +182,7 @@ impl RuntimeBuilder {
                 session_principals: DashMap::new(),
                 credential_provisioner: self.credential_provisioner,
                 credential_ledger: CredentialLedger::new(),
+                idempotency_index: DashMap::new(),
             }),
         })
     }
@@ -207,6 +213,28 @@ struct RuntimeInner {
     credential_provisioner: Option<Arc<dyn CredentialProvisioner>>,
     /// Runtime ledger of outstanding credential ids.
     credential_ledger: CredentialLedger,
+    /// Logical idempotency index for `tool.invoke` (ARCP v1.1 §6.4).
+    /// Keyed by `(principal-or-session, idempotency_key)`; resolves a
+    /// repeat command intent to the original `JobAccepted` payload so
+    /// retries return the same `job_id` instead of starting a duplicate
+    /// job.
+    idempotency_index: DashMap<IdempotencyScope, IdempotencyRecord>,
+}
+
+/// Scope key for logical idempotency. Authenticated requests scope by
+/// principal so a retry across a reconnect resolves to the same job;
+/// anonymous sessions fall back to the session id.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct IdempotencyScope {
+    principal_or_session: String,
+    idempotency_key: IdempotencyKey,
+}
+
+#[derive(Debug, Clone)]
+struct IdempotencyRecord {
+    accepted: JobAcceptedPayload,
+    tool: String,
+    arguments_canonical: String,
 }
 
 /// The ARCP runtime. Cheap to clone; share across tasks.
@@ -290,8 +318,46 @@ impl ARCPRuntime {
         let writer_emitted = Arc::clone(&emitted);
         let writer_last_ack = Arc::clone(&last_ack);
         let writer_ack_notify = Arc::clone(&ack_notify);
+        let writer_jobs = self.inner.jobs.clone();
         let writer = tokio::spawn(async move {
-            while let Some(env) = out_rx.recv().await {
+            while let Some(mut env) = out_rx.recv().await {
+                // Flow control (§6.5): for countable events, gate on the
+                // sliding window BEFORE persistence / publishing so an
+                // envelope blocked by backpressure isn't logged as
+                // already delivered. Non-countable envelopes (handshake,
+                // heartbeat, ack, control) bypass the gate.
+                let is_countable = env.payload.is_countable_event();
+                if is_countable {
+                    if let Some(window) = ack_window {
+                        loop {
+                            let in_flight = writer_emitted
+                                .load(Ordering::Acquire)
+                                .saturating_sub(writer_last_ack.load(Ordering::Acquire));
+                            if in_flight < window {
+                                break;
+                            }
+                            // Wait for either a new ack or for the
+                            // channel to close. run_connection drops
+                            // out_tx and then notifies us so we can
+                            // observe the closed channel and exit
+                            // instead of parking forever (§6.5).
+                            writer_ack_notify.notified().await;
+                            if out_rx.is_closed() {
+                                return;
+                            }
+                        }
+                    }
+                    // Stamp the session-scoped sequence number (§6.5 /
+                    // §6.6). For job-scoped events, also bump the
+                    // job's high-water mark so session.list_jobs and
+                    // job.subscribed report the actual last value the
+                    // subscriber can ack from.
+                    let seq = writer_emitted.fetch_add(1, Ordering::AcqRel) + 1;
+                    env.event_seq = Some(seq);
+                    if let Some(job_id) = env.job_id.as_ref() {
+                        writer_jobs.record_event_seq(job_id, seq);
+                    }
+                }
                 if let Err(e) = event_log.append(&env).await {
                     tracing::warn!(error = %e, "failed to persist outbound envelope");
                 }
@@ -304,23 +370,6 @@ impl ARCPRuntime {
                     let publish_env = redact_for_subscribers(&env);
                     let _ = writer_subs.publish(&publish_env);
                 }
-                // Flow control (§6.5): for countable events, gate on the
-                // sliding window. Non-countable envelopes (heartbeats,
-                // session control) bypass the gate.
-                if let Some(window) = ack_window {
-                    if env.payload.is_countable_event() {
-                        loop {
-                            let in_flight = writer_emitted
-                                .load(Ordering::Acquire)
-                                .saturating_sub(writer_last_ack.load(Ordering::Acquire));
-                            if in_flight < window {
-                                break;
-                            }
-                            writer_ack_notify.notified().await;
-                        }
-                        writer_emitted.fetch_add(1, Ordering::AcqRel);
-                    }
-                }
                 if let Err(e) = writer_transport.send(env).await {
                     tracing::warn!(error = %e, "transport send failed; closing writer");
                     break;
@@ -328,7 +377,6 @@ impl ARCPRuntime {
             }
         });
 
-        let connection_token = CancellationToken::new();
         let jobs = self.inner.jobs.clone();
         // Subscriptions owned by this connection, so we can drop them on
         // close even if the SubscriptionManager is shared across sessions.
@@ -339,6 +387,10 @@ impl ARCPRuntime {
         let connection_job_subs: Arc<DashMap<JobId, JoinHandle<()>>> = Arc::new(DashMap::new());
         let mut state: Option<SessionState> = None;
         let mut seen_ids: HashSet<MessageId> = HashSet::new();
+        // ARCP v1.1 durable-job semantics (§10.1, README §"Reconnect"):
+        // a normal transport drop must NOT cancel in-flight jobs. We
+        // only tear down jobs when the client sends `session.close`.
+        let mut explicit_close = false;
 
         let result = loop {
             let Some(envelope) = transport.recv().await? else {
@@ -388,6 +440,7 @@ impl ARCPRuntime {
                 }
                 MessageType::SessionClose(_) => {
                     tracing::info!("session.close received");
+                    explicit_close = true;
                     break Ok(());
                 }
                 MessageType::ToolInvoke(payload) => {
@@ -395,18 +448,20 @@ impl ARCPRuntime {
                         self.spawn_tool_invoke(
                             &out_tx,
                             &jobs,
-                            &connection_token,
                             envelope.id.clone(),
                             s.session_id.clone(),
                             s.principal.clone(),
+                            envelope.idempotency_key.clone(),
                             payload,
                         )
                         .await;
                     }
                 }
                 MessageType::Cancel(payload) => {
-                    self.handle_cancel(&out_tx, &jobs, envelope.id.clone(), &payload)
-                        .await;
+                    if let Some(s) = state.as_ref() {
+                        self.handle_cancel(&out_tx, &jobs, envelope.id.clone(), s, &payload)
+                            .await;
+                    }
                 }
                 MessageType::Ping(_) => {
                     let mut env =
@@ -548,14 +603,18 @@ impl ARCPRuntime {
             }
         };
 
-        // Tear down: cancel jobs owned by this session, abort all
-        // subscription forwarder tasks, drop the out_tx so the writer
-        // drains remaining envelopes, then await the writer.
-        connection_token.cancel();
-        if let Some(s) = state.as_ref() {
-            for snap in jobs.list_for_session(&s.session_id, None) {
-                let _ = jobs.cancel(&snap.job_id);
+        // Tear down: stop per-connection subscription forwarders and
+        // drop the out_tx so the writer drains. Per ARCP v1.1 durable
+        // semantics (§10.1), in-flight jobs survive a transport drop —
+        // they are only cancelled when the client sends `session.close`.
+        if explicit_close {
+            if let Some(s) = state.as_ref() {
+                for snap in jobs.list_for_session(&s.session_id, None) {
+                    let _ = jobs.cancel(&snap.job_id);
+                }
             }
+        }
+        if let Some(s) = state.as_ref() {
             self.inner.session_principals.remove(&s.session_id);
         }
         for entry in connection_subs.iter() {
@@ -690,12 +749,49 @@ impl ARCPRuntime {
         &self,
         out: &mpsc::Sender<Envelope>,
         jobs: &JobRegistry,
-        connection_token: &CancellationToken,
         correlation_id: MessageId,
         session_id: SessionId,
         principal: Option<String>,
+        idempotency_key: Option<IdempotencyKey>,
         payload: ToolInvokePayload,
     ) {
+        // ARCP v1.1 §6.4 logical idempotency: a retry of the same
+        // command intent (same scope + key + tool + arguments) MUST
+        // resolve to the original `job.accepted`. A conflicting payload
+        // under the same key is rejected with FAILED_PRECONDITION.
+        let idempotency_scope = idempotency_key.as_ref().map(|key| IdempotencyScope {
+            principal_or_session: principal.clone().unwrap_or_else(|| session_id.to_string()),
+            idempotency_key: key.clone(),
+        });
+        let canonical_args = serde_json::to_string(&payload.arguments).unwrap_or_default();
+        if let Some(scope) = idempotency_scope.as_ref() {
+            if let Some(record) = self.inner.idempotency_index.get(scope) {
+                if record.tool == payload.tool && record.arguments_canonical == canonical_args {
+                    let mut accepted =
+                        Envelope::new(MessageType::JobAccepted(record.accepted.clone()));
+                    accepted.correlation_id = Some(correlation_id);
+                    accepted.session_id = Some(session_id);
+                    accepted.job_id = Some(record.accepted.job_id.clone());
+                    accepted.idempotency_key = idempotency_key;
+                    let _ = out.send(accepted).await;
+                    return;
+                }
+                let mut err = Envelope::new(MessageType::JobFailed(JobFailedPayload {
+                    code: ErrorCode::FailedPrecondition,
+                    retryable: Some(false),
+                    message: format!(
+                        "idempotency key {} already bound to a different command intent",
+                        scope.idempotency_key
+                    ),
+                    details: None,
+                }));
+                err.correlation_id = Some(correlation_id);
+                err.session_id = Some(session_id);
+                err.idempotency_key = idempotency_key;
+                let _ = out.send(err).await;
+                return;
+            }
+        }
         let job_id = JobId::new();
 
         // ARCP v1.1 §7.5: parse the requested tool/agent as an
@@ -807,7 +903,7 @@ impl ARCPRuntime {
         if !accepted_sent {
             let mut accepted = Envelope::new(MessageType::JobAccepted(JobAcceptedPayload {
                 job_id: job_id.clone(),
-                credentials,
+                credentials: credentials.clone(),
                 lease: lease.clone(),
             }));
             accepted.correlation_id = Some(correlation_id.clone());
@@ -816,7 +912,11 @@ impl ARCPRuntime {
             let _ = out.send(accepted).await;
         }
 
-        let cancel = connection_token.child_token();
+        // §10.1 durable jobs outlive the transport, so the job's
+        // cancel token must NOT be a child of the connection token.
+        // Authorized cancel envelopes and explicit `session.close`
+        // drive cancellation explicitly through `jobs.cancel`.
+        let cancel = CancellationToken::new();
         let entry = JobEntry {
             job_id: job_id.clone(),
             session_id: session_id.clone(),
@@ -846,6 +946,24 @@ impl ARCPRuntime {
             .map_or_else(crate::runtime::context::BudgetTracker::new, |budget| {
                 crate::runtime::context::BudgetTracker::from_budget(budget)
             });
+
+        // Record the accepted payload against the (scope, key) tuple so
+        // a future retry resolves to this same job_id instead of
+        // spawning a duplicate (§6.4).
+        if let Some(scope) = idempotency_scope {
+            self.inner.idempotency_index.insert(
+                scope,
+                IdempotencyRecord {
+                    accepted: JobAcceptedPayload {
+                        job_id: job_id.clone(),
+                        credentials: credentials.clone(),
+                        lease: lease.clone(),
+                    },
+                    tool: agent_ref.format(),
+                    arguments_canonical: canonical_args,
+                },
+            );
+        }
 
         let join = tokio::spawn(async move {
             // job.started
@@ -927,6 +1045,7 @@ impl ARCPRuntime {
         out: &mpsc::Sender<Envelope>,
         jobs: &JobRegistry,
         correlation_id: MessageId,
+        requester: &SessionState,
         payload: &CancelPayload,
     ) {
         let CancelPayload {
@@ -936,10 +1055,38 @@ impl ARCPRuntime {
             CancelTargetKind::Job => {
                 #[allow(clippy::option_if_let_else)] // map_or_else nests too deeply here
                 let response_payload = if let Ok(job_id) = target_id.parse::<JobId>() {
-                    if jobs.cancel(&job_id) {
-                        MessageType::CancelAccepted(crate::messages::CancelAcceptedPayload {
-                            target_id: Some(target_id.clone()),
-                        })
+                    if let Some(snap) = jobs.snapshot(&job_id) {
+                        // ARCP v1.1 §7.6 / §10: cancel authority is
+                        // bound to the owning session or the same
+                        // authenticated principal. A subscriber that
+                        // merely knows another session's job id MUST
+                        // NOT be able to cancel it.
+                        let authorized = snap.session_id == requester.session_id
+                            || cancel_principal_matches(
+                                &self.inner.session_principals,
+                                &snap.session_id,
+                                requester.principal.as_deref(),
+                            );
+                        if authorized {
+                            if jobs.cancel(&job_id) {
+                                MessageType::CancelAccepted(
+                                    crate::messages::CancelAcceptedPayload {
+                                        target_id: Some(target_id.clone()),
+                                    },
+                                )
+                            } else {
+                                MessageType::CancelRefused(crate::messages::CancelRefusedPayload {
+                                    target_id: target_id.clone(),
+                                    reason: "job is no longer in-flight".into(),
+                                })
+                            }
+                        } else {
+                            MessageType::CancelRefused(crate::messages::CancelRefusedPayload {
+                                target_id: target_id.clone(),
+                                reason: "permission denied: not authorized to cancel this job"
+                                    .into(),
+                            })
+                        }
                     } else {
                         MessageType::CancelRefused(crate::messages::CancelRefusedPayload {
                             target_id: target_id.clone(),
@@ -954,6 +1101,7 @@ impl ARCPRuntime {
                 };
                 let mut env = Envelope::new(response_payload);
                 env.correlation_id = Some(correlation_id);
+                env.session_id = Some(requester.session_id.clone());
                 let _ = out.send(env).await;
             }
             CancelTargetKind::Stream | CancelTargetKind::Session => {
@@ -1344,6 +1492,24 @@ const fn is_forwardable_job_event(payload: &MessageType) -> bool {
             | MessageType::StreamError(_)
             | MessageType::ArtifactRef(_)
     )
+}
+
+/// Same-principal authorization helper for cross-session cancel
+/// (ARCP v1.1 §10). Returns `true` only when the requesting session's
+/// principal is non-anonymous and matches the principal that originally
+/// submitted the job.
+fn cancel_principal_matches(
+    session_principals: &DashMap<SessionId, Option<String>>,
+    owning_session: &SessionId,
+    requester_principal: Option<&str>,
+) -> bool {
+    let Some(requester_principal) = requester_principal else {
+        return false;
+    };
+    session_principals
+        .get(owning_session)
+        .and_then(|p| p.value().clone())
+        .is_some_and(|owner| owner == requester_principal)
 }
 
 /// Intersect two boolean capability slots.

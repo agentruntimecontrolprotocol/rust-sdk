@@ -44,10 +44,41 @@ pub struct BudgetTracker {
     inner: Arc<BudgetTrackerInner>,
 }
 
+/// Fixed-point scale for internal budget accounting. 1.0 currency unit
+/// is `BUDGET_SCALE` ticks (microunits), giving 6 decimal places of
+/// precision. This is more than enough for any real-world money or
+/// credit currency and avoids the rounding artifacts of binary f64
+/// comparisons at exhaustion boundaries.
+const BUDGET_SCALE: i128 = 1_000_000;
+
 #[derive(Debug, Default)]
 struct BudgetTrackerInner {
-    /// Map of currency → (max, consumed).
-    state: Mutex<HashMap<String, (f64, f64)>>,
+    /// Per-currency `(max, consumed)` in fixed-point microunits
+    /// (`BUDGET_SCALE` ticks per currency unit) so equality comparisons
+    /// at exhaustion boundaries are exact.
+    state: Mutex<HashMap<String, (i128, i128)>>,
+}
+
+/// Convert a wire-level f64 amount to fixed-point microunits.
+///
+/// Returns `None` for non-finite, negative, or out-of-range inputs.
+fn to_micros(amount: f64) -> Option<i128> {
+    if !amount.is_finite() || amount < 0.0 {
+        return None;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let max_amount = (i128::MAX / BUDGET_SCALE) as f64;
+    if amount > max_amount {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    let scaled = (amount * BUDGET_SCALE as f64).round() as i128;
+    Some(scaled)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn from_micros(micros: i128) -> f64 {
+    micros as f64 / BUDGET_SCALE as f64
 }
 
 impl BudgetTracker {
@@ -63,7 +94,8 @@ impl BudgetTracker {
     pub fn from_budget(budget: &CostBudget) -> Self {
         let mut state = HashMap::new();
         for a in &budget.amounts {
-            state.insert(a.currency.clone(), (a.amount, 0.0));
+            let max = to_micros(a.amount).unwrap_or(0);
+            state.insert(a.currency.clone(), (max, 0i128));
         }
         Self {
             inner: Arc::new(BudgetTrackerInner {
@@ -84,7 +116,7 @@ impl BudgetTracker {
     #[must_use]
     pub fn remaining(&self, currency: &str) -> Option<f64> {
         let s = self.inner.state.lock().ok()?;
-        s.get(currency).map(|(max, cons)| max - cons)
+        s.get(currency).map(|(max, cons)| from_micros(max - cons))
     }
 
     /// Snapshot of remaining-per-currency for all tracked currencies.
@@ -95,7 +127,7 @@ impl BudgetTracker {
             .lock()
             .map(|s| {
                 s.iter()
-                    .map(|(k, (max, cons))| (k.clone(), max - cons))
+                    .map(|(k, (max, cons))| (k.clone(), from_micros(max - cons)))
                     .collect()
             })
             .unwrap_or_default()
@@ -103,7 +135,7 @@ impl BudgetTracker {
 
     /// Charge `amount` to `currency`. Returns `Ok(remaining)` after
     /// the decrement, or [`ARCPError::BudgetExhausted`] when the
-    /// charge would (or did) drop the counter to ≤ 0.
+    /// charge would push the counter below zero.
     ///
     /// Negative amounts are rejected per §9.6.
     ///
@@ -111,18 +143,34 @@ impl BudgetTracker {
     /// ignored (returns `Ok(f64::INFINITY)`), matching the §9.6 rule
     /// that "unreported / unbudgeted costs are not enforced".
     ///
+    /// # Examples
+    ///
+    /// ```
+    /// use arcp::messages::{CostBudget, CostBudgetAmount};
+    /// use arcp::runtime::context::BudgetTracker;
+    ///
+    /// let tracker = BudgetTracker::from_budget(&CostBudget {
+    ///     amounts: vec![CostBudgetAmount { currency: "USD".into(), amount: 1.00 }],
+    /// });
+    /// assert!(tracker.charge("USD", 0.30).is_ok());
+    /// assert!(tracker.charge("USD", 5.00).is_err()); // overspend rejected
+    /// assert!((tracker.remaining("USD").unwrap() - 0.70).abs() < 1e-9);
+    /// ```
+    ///
     /// # Errors
     ///
-    /// - [`ARCPError::InvalidArgument`] for a negative amount.
-    /// - [`ARCPError::BudgetExhausted`] when the counter is at or
-    ///   below zero before the charge (the charge is recorded so the
-    ///   `cost.budget.remaining` metric reflects the overshoot).
+    /// - [`ARCPError::InvalidArgument`] for a negative or non-finite
+    ///   amount.
+    /// - [`ARCPError::BudgetExhausted`] when the charge would overspend
+    ///   the remaining budget. The charge is rejected and the counter
+    ///   is left unchanged so the agent sees the canonical signal on
+    ///   the first operation that would have overspent.
     pub fn charge(&self, currency: &str, amount: f64) -> Result<f64, ARCPError> {
-        if amount < 0.0 || !amount.is_finite() {
+        let Some(amount_micros) = to_micros(amount) else {
             return Err(ARCPError::InvalidArgument {
-                detail: format!("negative or non-finite cost amount: {amount}"),
+                detail: format!("negative, non-finite, or out-of-range cost amount: {amount}"),
             });
-        }
+        };
         let Ok(mut s) = self.inner.state.lock() else {
             return Err(ARCPError::Internal {
                 detail: "budget tracker mutex poisoned".into(),
@@ -133,17 +181,17 @@ impl BudgetTracker {
             // not enforced". Treat unbudgeted currencies the same.
             return Ok(f64::INFINITY);
         };
-        // §9.6 ordering: check BEFORE decrement so the agent sees
-        // BUDGET_EXHAUSTED on the operation that would have overspent,
-        // not the one that pushed us into the red.
-        let remaining_before = entry.0 - entry.1;
-        if remaining_before <= 0.0 {
+        let remaining = entry.0.saturating_sub(entry.1);
+        if amount_micros > remaining {
             return Err(ARCPError::BudgetExhausted {
-                detail: format!("{currency} budget exhausted (remaining={remaining_before})"),
+                detail: format!(
+                    "{currency} budget exhausted (remaining={}, attempted={amount})",
+                    from_micros(remaining)
+                ),
             });
         }
-        entry.1 += amount;
-        Ok(entry.0 - entry.1)
+        entry.1 = entry.1.saturating_add(amount_micros);
+        Ok(from_micros(entry.0 - entry.1))
     }
 }
 
@@ -189,14 +237,51 @@ mod budget_tracker_tests {
     }
 
     #[test]
-    fn exhaustion_surfaces_budget_exhausted_on_next_charge() {
+    fn oversized_single_charge_is_rejected_and_counter_unchanged() {
+        // §9.6: the charge that would overspend MUST fail. The counter
+        // stays unmoved so subsequent in-budget charges still succeed.
         let t = BudgetTracker::from_budget(&budget(&[("USD", 1.0)]));
-        // Push past zero on the second charge: remaining goes to -0.5.
-        let _ = t.charge("USD", 1.5).expect("first charge ok");
-        // Counter is now negative; next charge rejects with
-        // BUDGET_EXHAUSTED per §9.6.
-        let err = t.charge("USD", 0.1).unwrap_err();
+        let err = t.charge("USD", 1.5).unwrap_err();
         assert!(matches!(err, ARCPError::BudgetExhausted { .. }));
+        let remaining = t.remaining("USD").expect("currency tracked");
+        assert!((remaining - 1.0).abs() < f64::EPSILON);
+        // A subsequent in-budget charge still works.
+        let after = t.charge("USD", 0.4).expect("in-budget charge ok");
+        assert!((after - 0.6).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn exact_exhaustion_succeeds_and_next_charge_fails() {
+        // Spending exactly the remaining budget must succeed; spending
+        // any amount after that must fail with BUDGET_EXHAUSTED.
+        let t = BudgetTracker::from_budget(&budget(&[("USD", 1.0)]));
+        let after = t.charge("USD", 1.0).expect("exact-exhaustion ok");
+        assert!(after.abs() < f64::EPSILON);
+        let err = t.charge("USD", 0.000_001).unwrap_err();
+        assert!(matches!(err, ARCPError::BudgetExhausted { .. }));
+    }
+
+    #[test]
+    fn fractional_decimal_charges_sum_without_floating_point_drift() {
+        // 0.10 + 0.20 = 0.30 — would be off-by-an-ulp in raw f64 math
+        // and could refuse a 0.70 follow-up against a 1.00 budget. The
+        // fixed-point accounting must not exhibit that drift.
+        let t = BudgetTracker::from_budget(&budget(&[("USD", 1.0)]));
+        t.charge("USD", 0.10).expect("first slice");
+        t.charge("USD", 0.20).expect("second slice");
+        let after = t.charge("USD", 0.70).expect("third slice ok");
+        assert!(after.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn multi_currency_charges_are_tracked_independently() {
+        let t = BudgetTracker::from_budget(&budget(&[("USD", 5.0), ("EUR", 2.0)]));
+        t.charge("USD", 3.0).expect("usd in budget");
+        t.charge("EUR", 1.5).expect("eur in budget");
+        let usd_err = t.charge("USD", 2.5).unwrap_err();
+        assert!(matches!(usd_err, ARCPError::BudgetExhausted { .. }));
+        assert!((t.remaining("USD").unwrap() - 2.0).abs() < f64::EPSILON);
+        assert!((t.remaining("EUR").unwrap() - 0.5).abs() < f64::EPSILON);
     }
 
     #[test]

@@ -22,6 +22,62 @@
 //! The public API centers on [`ARCPClient`] for consumers and [`ARCPRuntime`]
 //! for runtimes.
 //!
+//! ## Example
+//!
+//! ```
+//! use std::sync::Arc;
+//!
+//! use arcp::auth::BearerAuthenticator;
+//! use arcp::messages::{AuthScheme, Capabilities, ClientIdentity, Credentials};
+//! use arcp::runtime::{ARCPRuntime, ToolContext, ToolHandler, ToolRegistryBuilder};
+//! use arcp::transport::paired;
+//! use arcp::ARCPClient;
+//! use async_trait::async_trait;
+//!
+//! struct Echo;
+//!
+//! #[async_trait]
+//! impl ToolHandler for Echo {
+//!     fn name(&self) -> &'static str { "echo" }
+//!     async fn invoke(
+//!         &self,
+//!         input: serde_json::Value,
+//!         _ctx: ToolContext,
+//!     ) -> Result<serde_json::Value, arcp::ARCPError> {
+//!         Ok(input)
+//!     }
+//! }
+//!
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let tools = ToolRegistryBuilder::new().with(Arc::new(Echo)).build();
+//! let runtime = ARCPRuntime::builder()
+//!     .with_authenticator(Box::new(BearerAuthenticator::new().with_token("tok", "alice")))
+//!     .with_tools(tools)
+//!     .build()
+//!     .await?;
+//! let (server_t, client_t) = paired();
+//! let _server = runtime.serve_connection(server_t);
+//! let session = ARCPClient::new(client_t)
+//!     .open()?
+//!     .authenticate(
+//!         Credentials { scheme: AuthScheme::Bearer, token: Some("tok".into()) },
+//!         ClientIdentity {
+//!             kind: "demo".into(), version: "1.0".into(),
+//!             fingerprint: None, principal: None,
+//!         },
+//!         Capabilities::default(),
+//!     )
+//!     .await?;
+//! let result = session.invoke("echo", serde_json::json!({"hi": "arcp"})).await?.join().await?;
+//! assert_eq!(result["hi"], "arcp");
+//! # Ok(())
+//! # }
+//! # fn main() {
+//! #     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+//! #     rt.block_on(run()).unwrap();
+//! # }
+//! ```
+//!
 //! [rfc]: https://github.com/agentruntimecontrolprotocol/spec/blob/main/docs/draft-arcp-1.1.md
 
 #![deny(unsafe_code)]

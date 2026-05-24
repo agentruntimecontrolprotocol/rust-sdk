@@ -50,8 +50,10 @@ struct SessionInner<T: Transport + 'static> {
     capabilities: Mutex<Capabilities>,
     /// Pending: `correlation_id` → notifier. The reader task resolves on terminal job events.
     pending_jobs: DashMap<MessageId, JobNotifier>,
-    /// invoke→accepted: `correlation_id` → oneshot for the `job_id`.
-    pending_accepted: DashMap<MessageId, oneshot::Sender<JobId>>,
+    /// invoke→accepted: `correlation_id` → oneshot carrying either the
+    /// `JobId` from `job.accepted` or the error from a pre-acceptance
+    /// `job.failed` / `nack` / transport close.
+    pending_accepted: DashMap<MessageId, oneshot::Sender<Result<JobId, ARCPError>>>,
     /// Pending artifact responses (put → `ArtifactRef`, fetch → bytes).
     pending_artifact: DashMap<MessageId, oneshot::Sender<ArtifactReply>>,
     /// Active subscriptions: `subscription_id` → forwarder channel.
@@ -176,6 +178,7 @@ impl<T: Transport + 'static> Session<Unauthenticated, T> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn reader_loop(inner: Arc<SessionInner<T>>) {
         while let Ok(Some(env)) = inner.transport.recv().await {
             // Subscription delivery doesn't need a correlation_id; route
@@ -199,7 +202,7 @@ impl<T: Transport + 'static> Session<Unauthenticated, T> {
             match env.payload {
                 MessageType::JobAccepted(JobAcceptedPayload { job_id, .. }) => {
                     if let Some((_, tx)) = inner.pending_accepted.remove(&corr) {
-                        let _ = tx.send(job_id);
+                        let _ = tx.send(Ok(job_id));
                     }
                 }
                 MessageType::JobCompleted(JobCompletedPayload { value, .. }) => {
@@ -210,6 +213,17 @@ impl<T: Transport + 'static> Session<Unauthenticated, T> {
                     }
                 }
                 MessageType::JobFailed(JobFailedPayload { code, message, .. }) => {
+                    // A `job.failed` that arrives before `job.accepted`
+                    // (e.g. invalid agent reference, agent version not
+                    // available, credential provisioning failure) MUST
+                    // unblock `invoke` instead of leaving its caller
+                    // parked on `pending_accepted` forever.
+                    let err_for_accepted = ARCPError::Unknown {
+                        detail: format!("job failed before accept ({code}): {message}"),
+                    };
+                    if let Some((_, tx)) = inner.pending_accepted.remove(&corr) {
+                        let _ = tx.send(Err(err_for_accepted));
+                    }
                     if let Some(mut entry) = inner.pending_jobs.get_mut(&corr) {
                         if let Some(tx) = entry.take() {
                             let _ = tx.send(Err(ARCPError::Unknown {
@@ -219,9 +233,16 @@ impl<T: Transport + 'static> Session<Unauthenticated, T> {
                     }
                 }
                 MessageType::JobCancelled(p) => {
+                    let reason = p.reason.unwrap_or_default();
+                    // Pre-acceptance cancel (rare but possible) must
+                    // also unblock the invoke caller.
+                    if let Some((_, tx)) = inner.pending_accepted.remove(&corr) {
+                        let _ = tx.send(Err(ARCPError::Cancelled {
+                            reason: reason.clone(),
+                        }));
+                    }
                     if let Some(mut entry) = inner.pending_jobs.get_mut(&corr) {
                         if let Some(tx) = entry.take() {
-                            let reason = p.reason.unwrap_or_default();
                             let _ = tx.send(Err(ARCPError::Cancelled { reason }));
                         }
                     }
@@ -239,7 +260,14 @@ impl<T: Transport + 'static> Session<Unauthenticated, T> {
                     }
                 }
                 MessageType::Nack(payload) => {
-                    // A nack might resolve a pending artifact request.
+                    // A nack can resolve a pending artifact request or
+                    // unblock an in-flight `tool.invoke` whose runtime
+                    // refused it before accepting.
+                    if let Some((_, tx)) = inner.pending_accepted.remove(&corr) {
+                        let _ = tx.send(Err(ARCPError::Unknown {
+                            detail: format!("nack ({}): {}", payload.code, payload.message),
+                        }));
+                    }
                     if let Some((_, tx)) = inner.pending_artifact.remove(&corr) {
                         let _ = tx.send(ArtifactReply::Nack(payload));
                     }
@@ -252,9 +280,48 @@ impl<T: Transport + 'static> Session<Unauthenticated, T> {
                 _ => { /* ignore intermediate events for now */ }
             }
         }
-        // Drain pending entries with an Unavailable error.
-        let keys: Vec<MessageId> = inner.pending_jobs.iter().map(|r| r.key().clone()).collect();
-        for k in keys {
+        // Transport closed (or recv errored). Resolve every pending
+        // request with `Unavailable` so no caller hangs on a oneshot
+        // whose sender is dropped silently. The pending_jobs map uses a
+        // sentinel-based notifier; we still need to walk it explicitly.
+        let accepted_keys: Vec<MessageId> = inner
+            .pending_accepted
+            .iter()
+            .map(|r| r.key().clone())
+            .collect();
+        for k in accepted_keys {
+            if let Some((_, tx)) = inner.pending_accepted.remove(&k) {
+                let _ = tx.send(Err(ARCPError::Unavailable {
+                    detail: "transport closed before job.accepted".into(),
+                }));
+            }
+        }
+        let artifact_keys: Vec<MessageId> = inner
+            .pending_artifact
+            .iter()
+            .map(|r| r.key().clone())
+            .collect();
+        for k in artifact_keys {
+            if let Some((_, tx)) = inner.pending_artifact.remove(&k) {
+                let _ = tx.send(ArtifactReply::Nack(NackPayload {
+                    code: ErrorCode::Unavailable,
+                    message: "transport closed before artifact response".into(),
+                    details: None,
+                }));
+            }
+        }
+        let subscribe_keys: Vec<MessageId> = inner
+            .pending_subscribe
+            .iter()
+            .map(|r| r.key().clone())
+            .collect();
+        for k in subscribe_keys {
+            if let Some((_, tx)) = inner.pending_subscribe.remove(&k) {
+                drop(tx); // dropping the sender signals Unavailable to the awaiter
+            }
+        }
+        let job_keys: Vec<MessageId> = inner.pending_jobs.iter().map(|r| r.key().clone()).collect();
+        for k in job_keys {
             if let Some(mut entry) = inner.pending_jobs.get_mut(&k) {
                 if let Some(tx) = entry.take() {
                     let _ = tx.send(Err(ARCPError::Unavailable {
@@ -310,7 +377,7 @@ impl<T: Transport + 'static> Session<Authenticated, T> {
         env.session_id = Some(session_id);
         let correlation_id = env.id.clone();
 
-        let (acc_tx, acc_rx) = oneshot::channel::<JobId>();
+        let (acc_tx, acc_rx) = oneshot::channel::<Result<JobId, ARCPError>>();
         let (term_tx, term_rx) = oneshot::channel::<Result<serde_json::Value, ARCPError>>();
         self.inner
             .pending_accepted
@@ -319,11 +386,28 @@ impl<T: Transport + 'static> Session<Authenticated, T> {
             .pending_jobs
             .insert(correlation_id.clone(), JobNotifier::Pending(term_tx));
 
-        self.inner.transport.send(env).await?;
+        if let Err(e) = self.inner.transport.send(env).await {
+            // The pending slots we just inserted would otherwise leak
+            // and hold their oneshot senders alive forever.
+            self.inner.pending_accepted.remove(&correlation_id);
+            self.inner.pending_jobs.remove(&correlation_id);
+            return Err(e);
+        }
 
-        let job_id = acc_rx.await.map_err(|_| ARCPError::Unavailable {
-            detail: "runtime closed before job.accepted".into(),
-        })?;
+        // The reader resolves `acc_rx` with `Ok(job_id)` on accept, or
+        // with `Err(...)` on pre-acceptance `job.failed` / `nack` /
+        // transport close, so the caller can never hang.
+        let job_id = if let Ok(result) = acc_rx.await {
+            result?
+        } else {
+            // Channel closed without a value — reader exited before
+            // stamping a result. Also drop the terminal slot we
+            // inserted speculatively.
+            self.inner.pending_jobs.remove(&correlation_id);
+            return Err(ARCPError::Unavailable {
+                detail: "runtime closed before job.accepted".into(),
+            });
+        };
 
         Ok(JobHandle {
             job_id,
@@ -362,8 +446,13 @@ impl<T: Transport + 'static> Session<Authenticated, T> {
         let correlation_id = env.id.clone();
 
         let (tx, rx) = oneshot::channel::<ArtifactReply>();
-        self.inner.pending_artifact.insert(correlation_id, tx);
-        self.inner.transport.send(env).await?;
+        self.inner
+            .pending_artifact
+            .insert(correlation_id.clone(), tx);
+        if let Err(e) = self.inner.transport.send(env).await {
+            self.inner.pending_artifact.remove(&correlation_id);
+            return Err(e);
+        }
 
         match rx.await {
             Ok(ArtifactReply::Ref(reference)) => Ok(reference),
@@ -395,8 +484,13 @@ impl<T: Transport + 'static> Session<Authenticated, T> {
         let correlation_id = env.id.clone();
 
         let (tx, rx) = oneshot::channel::<ArtifactReply>();
-        self.inner.pending_artifact.insert(correlation_id, tx);
-        self.inner.transport.send(env).await?;
+        self.inner
+            .pending_artifact
+            .insert(correlation_id.clone(), tx);
+        if let Err(e) = self.inner.transport.send(env).await {
+            self.inner.pending_artifact.remove(&correlation_id);
+            return Err(e);
+        }
 
         match rx.await {
             Ok(ArtifactReply::Inline { data, media_type }) => Ok((data, media_type)),
@@ -445,8 +539,13 @@ impl<T: Transport + 'static> Session<Authenticated, T> {
         let correlation_id = env.id.clone();
 
         let (acc_tx, acc_rx) = oneshot::channel::<SubscriptionId>();
-        self.inner.pending_subscribe.insert(correlation_id, acc_tx);
-        self.inner.transport.send(env).await?;
+        self.inner
+            .pending_subscribe
+            .insert(correlation_id.clone(), acc_tx);
+        if let Err(e) = self.inner.transport.send(env).await {
+            self.inner.pending_subscribe.remove(&correlation_id);
+            return Err(e);
+        }
 
         let subscription_id = acc_rx.await.map_err(|_| ARCPError::Unavailable {
             detail: "runtime closed before subscribe.accepted".into(),

@@ -43,15 +43,21 @@ illustrations with setup elided; the integration tests under [`tests/`](../tests
 show fully exercised paths.
 
 ```sh
-cargo run --example submit_and_stream
-cargo run --example resumability
+cargo run --example session_ack
 cargo run --example job_subscribe
 cargo run --example cost_budget
 cargo run --example provisioned_credentials
+cargo run --example agent_versions
 ```
 
-Most examples use the in-memory transport so they run without a network port.
-Transport-specific examples cover stdio, WebSocket hosting, and Axum hosting.
+These all use the in-memory transport so they run without a network port.
+Transport-specific examples cover stdio (`stdio.rs`), Axum hosting
+(`axum_server.rs`), and the canonical WebSocket flow via the CLI runtime
+above. The single-file examples under [`examples/`](../examples/) (e.g.
+`cancellation.rs`, `lease_expires_at.rs`) are illustrative — they elide
+transport setup with `let client: Client = todo!();` and are meant to be
+read alongside the runnable directory-based examples rather than executed
+directly.
 
 ## Minimal shape
 

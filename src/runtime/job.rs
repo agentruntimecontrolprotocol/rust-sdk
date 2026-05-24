@@ -204,6 +204,19 @@ impl JobRegistry {
         })
     }
 
+    /// Record the session-scoped sequence number of the most recent
+    /// event the runtime emitted for `job_id`. Used by the connection
+    /// writer to keep `JobRegistry`'s high-water mark in lockstep with
+    /// the session sequence so `job.subscribed.subscribed_from` reflects
+    /// what the subscriber can actually ack from.
+    pub fn record_event_seq(&self, job_id: &JobId, seq: u64) {
+        if let Some(mut r) = self.inner.get_mut(job_id) {
+            if seq > r.entry.last_event_seq {
+                r.entry.last_event_seq = seq;
+            }
+        }
+    }
+
     /// Snapshot the public-facing fields of a job, if registered.
     ///
     /// Used by `job.subscribe` (ARCP v1.1 §7.6) to populate the

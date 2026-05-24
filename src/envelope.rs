@@ -120,6 +120,14 @@ pub struct Envelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<serde_json::Value>,
 
+    /// Strictly increasing per-session sequence number for countable
+    /// events (ARCP v1.1 §6.5 / §6.6). Stamped by the runtime writer on
+    /// every envelope where [`MessageType::is_countable_event`] is true;
+    /// absent on session-control envelopes and on locally constructed
+    /// envelopes that have not yet been emitted by a runtime writer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_seq: Option<u64>,
+
     /// Type-specific body. Flattened so `type` and `payload` appear at the
     /// envelope level on the wire.
     #[serde(flatten)]
@@ -157,6 +165,7 @@ impl Envelope {
             idempotency_key: None,
             priority: Priority::default(),
             extensions: None,
+            event_seq: None,
             payload,
         }
     }
@@ -238,6 +247,10 @@ pub struct RawEnvelope {
     /// Extensions object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<serde_json::Value>,
+    /// Strictly increasing per-session sequence number for countable
+    /// events (ARCP v1.1 §6.5 / §6.6). Mirrors [`Envelope::event_seq`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_seq: Option<u64>,
 }
 
 impl RawEnvelope {
