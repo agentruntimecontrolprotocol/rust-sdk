@@ -32,6 +32,10 @@ concurrency:
 
 permissions:
   contents: read
+  # Required for tokenless Codecov uploads via OIDC.
+  # Codecov rejects pushes to protected branches without either a CODECOV_TOKEN
+  # secret or an OIDC ID token. We use OIDC so the workflow stays self-bootstrapping.
+  id-token: write
 
 jobs:
   test:
@@ -107,6 +111,9 @@ jobs:
           fail_ci_if_error: false
           flags: unittests
           files: ./lcov.info
+          # OIDC keeps the upload tokenless on protected branches. Fork PRs can't mint
+          # an ID token, so skip OIDC for them — the action's tokenless path takes over.
+          use_oidc: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload test artifacts on failure

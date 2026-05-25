@@ -3,12 +3,18 @@
 <p align="center"><strong>Rust SDK for the Agent Runtime Control Protocol (ARCP) — submit, observe, and control long-running agent jobs from Rust.</strong></p>
 
 <p align="center">
-  <a href="https://crates.io/crates/arcp"><img alt="crates.io" src="https://img.shields.io/crates/v/arcp.svg"></a>
-  <a href="https://docs.rs/arcp"><img alt="docs.rs" src="https://docs.rs/arcp/badge.svg"></a>
   <a href="https://github.com/agentruntimecontrolprotocol/rust-sdk/actions/workflows/test.yml"><img alt="CI" src="https://github.com/agentruntimecontrolprotocol/rust-sdk/actions/workflows/test.yml/badge.svg"></a>
   <a href="https://codecov.io/gh/agentruntimecontrolprotocol/rust-sdk"><img alt="codecov" src="https://codecov.io/gh/agentruntimecontrolprotocol/rust-sdk/graph/badge.svg"></a>
   <a href="https://github.com/agentruntimecontrolprotocol/spec/blob/main/docs/draft-arcp-1.1.md"><img alt="ARCP" src="https://img.shields.io/badge/ARCP-v1.1%20draft-blue"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-lightgrey"></a>
+</p>
+
+<p align="center">
+  <a href="https://crates.io/crates/arcp"><img alt="arcp" src="https://img.shields.io/crates/v/arcp.svg?label=arcp"></a>
+  <a href="https://crates.io/crates/arcp-core"><img alt="arcp-core" src="https://img.shields.io/crates/v/arcp-core.svg?label=arcp-core"></a>
+  <a href="https://crates.io/crates/arcp-client"><img alt="arcp-client" src="https://img.shields.io/crates/v/arcp-client.svg?label=arcp-client"></a>
+  <a href="https://crates.io/crates/arcp-runtime"><img alt="arcp-runtime" src="https://img.shields.io/crates/v/arcp-runtime.svg?label=arcp-runtime"></a>
+  <a href="https://docs.rs/arcp"><img alt="docs.rs" src="https://img.shields.io/docsrs/arcp?label=docs.rs"></a>
 </p>
 
 <p align="center">
@@ -28,7 +34,7 @@ ARCP itself is a transport-agnostic wire protocol for long-running AI agent jobs
 
 ## Installation
 
-Requires Rust 1.88 or later (the MSRV declared in `Cargo.toml`). The crate is on [crates.io](https://crates.io/crates/arcp); default features ship the WebSocket and stdio transports, and the in-memory transport is always available for tests.
+Requires Rust 1.88 or later (the MSRV declared in `Cargo.toml`). The SDK is a Cargo workspace that publishes several independently-versioned crates on [crates.io](https://crates.io); most consumers want the umbrella `arcp` crate, which re-exports the protocol core, client, and runtime. Default features ship the WebSocket and stdio transports, and the in-memory transport is always available for tests.
 
 ```sh
 cargo add arcp
@@ -38,8 +44,23 @@ To drop the WebSocket dependency and keep only stdio plus the in-memory transpor
 
 ```toml
 [dependencies]
-arcp = { version = "1.1", default-features = false, features = ["transport-stdio"] }
+arcp = { version = "2", default-features = false, features = ["transport-stdio"] }
 ```
+
+### Workspace crates
+
+The workspace publishes the following crates at independent versions. Pick `arcp` (the umbrella) unless you need to slim dependencies:
+
+| Crate | Version | Purpose |
+|---|---|---|
+| [`arcp`](https://crates.io/crates/arcp) | [![arcp](https://img.shields.io/crates/v/arcp.svg?label=)](https://crates.io/crates/arcp) | Umbrella — re-exports `arcp-core` + `arcp-client` + `arcp-runtime`. |
+| [`arcp-core`](https://crates.io/crates/arcp-core) | [![arcp-core](https://img.shields.io/crates/v/arcp-core.svg?label=)](https://crates.io/crates/arcp-core) | Wire types, error taxonomy, IDs, transports, `Authenticator` trait. No internal deps. |
+| [`arcp-client`](https://crates.io/crates/arcp-client) | [![arcp-client](https://img.shields.io/crates/v/arcp-client.svg?label=)](https://crates.io/crates/arcp-client) | `ARCPClient` and type-state `Session`. Pull this if you only submit and observe jobs. |
+| [`arcp-runtime`](https://crates.io/crates/arcp-runtime) | [![arcp-runtime](https://img.shields.io/crates/v/arcp-runtime.svg?label=)](https://crates.io/crates/arcp-runtime) | `ARCPRuntime`, SQLite eventlog, JWT/bearer auth, and the `arcp` CLI. Pull this to host agents. |
+| [`arcp-tower`](https://crates.io/crates/arcp-tower) | [![arcp-tower](https://img.shields.io/crates/v/arcp-tower.svg?label=)](https://crates.io/crates/arcp-tower) | Name-reservation stub for the forthcoming Tower middleware. |
+| [`arcp-axum`](https://crates.io/crates/arcp-axum) | [![arcp-axum](https://img.shields.io/crates/v/arcp-axum.svg?label=)](https://crates.io/crates/arcp-axum) | Name-reservation stub for the forthcoming Axum middleware. |
+| [`arcp-actix-web`](https://crates.io/crates/arcp-actix-web) | [![arcp-actix-web](https://img.shields.io/crates/v/arcp-actix-web.svg?label=)](https://crates.io/crates/arcp-actix-web) | Name-reservation stub for the forthcoming actix-web middleware. |
+| [`arcp-otel`](https://crates.io/crates/arcp-otel) | [![arcp-otel](https://img.shields.io/crates/v/arcp-otel.svg?label=)](https://crates.io/crates/arcp-otel) | Name-reservation stub for the forthcoming OpenTelemetry integration. |
 
 ## Quick start
 

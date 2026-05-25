@@ -1,0 +1,82 @@
+# Codecov configuration for the arcp Cargo workspace.
+# Reference: https://docs.codecov.com/docs/codecovyml-reference
+
+codecov:
+  # Wait for all matrix uploads before posting status; the CI uploads from the
+  # stable Rust toolchain only, so a single report is expected.
+  notify:
+    wait_for_ci: true
+  require_ci_to_pass: true
+
+coverage:
+  precision: 2
+  round: down
+  range: "70...95"
+  status:
+    project:
+      default:
+        target: auto
+        # Don't fail the status check on small drops while coverage stabilizes.
+        threshold: 1%
+        # Score against the umbrella + workspace as a whole.
+        flags:
+          - unittests
+    patch:
+      default:
+        target: 80%
+        threshold: 5%
+
+# The workspace ships eight crates under `crates/`. Group coverage by crate so
+# diffs and the Codecov UI break out per-package totals — useful when only
+# `arcp-client` or `arcp-runtime` changes.
+component_management:
+  individual_components:
+    - component_id: arcp
+      name: arcp (umbrella)
+      paths:
+        - crates/arcp/**
+    - component_id: arcp_core
+      name: arcp-core
+      paths:
+        - crates/arcp-core/**
+    - component_id: arcp_client
+      name: arcp-client
+      paths:
+        - crates/arcp-client/**
+    - component_id: arcp_runtime
+      name: arcp-runtime
+      paths:
+        - crates/arcp-runtime/**
+    - component_id: arcp_middleware_stubs
+      name: arcp middleware stubs
+      paths:
+        - crates/arcp-tower/**
+        - crates/arcp-axum/**
+        - crates/arcp-actix-web/**
+        - crates/arcp-otel/**
+
+flag_management:
+  default_rules:
+    carryforward: true
+  individual_flags:
+    - name: unittests
+      paths:
+        - crates/**
+
+# Don't count generated code, examples, tests, or the embedded vendor TLS roots
+# against coverage — they distort the workspace number without adding signal.
+ignore:
+  - "**/target/**"
+  - "**/tests/**"
+  - "**/examples/**"
+  - "**/benches/**"
+  - "crates/*/build.rs"
+  - "scripts/**"
+  - "recipes/**"
+
+comment:
+  layout: "header, diff, components, flags, files, footer"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: true
