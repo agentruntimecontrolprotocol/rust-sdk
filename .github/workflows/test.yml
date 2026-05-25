@@ -83,6 +83,32 @@ jobs:
       - name: cargo test
         run: cargo test --all-targets --all-features
 
+      # Coverage is collected from the `stable` matrix entry only — the
+      # report is the same on every Rust version. cargo-llvm-cov drives
+      # llvm-cov over the existing test invocation (no separate test run).
+      # taiki-e/install-action provides prebuilt binaries to avoid a long
+      # source compile. Non-blocking so a Codecov outage cannot break CI.
+      - name: Install cargo-llvm-cov
+        if: matrix.rust == 'stable'
+        # taiki-e/install-action v2.79.7
+        uses: taiki-e/install-action@d9be7d8cda89035c9c843f78bd44d4f72d8403d4 # v2.79.7
+        with:
+          tool: cargo-llvm-cov
+
+      - name: cargo llvm-cov (lcov)
+        if: matrix.rust == 'stable'
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        if: matrix.rust == 'stable'
+        # codecov/codecov-action v6.0.1
+        uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
+        with:
+          fail_ci_if_error: false
+          flags: unittests
+          files: ./lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+
       - name: Upload test artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v7
