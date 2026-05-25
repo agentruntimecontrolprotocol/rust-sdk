@@ -178,107 +178,110 @@ impl<T: Transport + 'static> Session<Unauthenticated, T> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    fn dispatch_envelope(inner: &SessionInner<T>, env: Envelope) {
+        // Subscription delivery doesn't need a correlation_id; route
+        // by subscription_id from the envelope metadata.
+        if let MessageType::SubscribeEvent(p) = &env.payload {
+            if let Some(sub_id) = env.subscription_id.as_ref() {
+                if let Some(forwarder) = inner.active_subscriptions.get(sub_id) {
+                    // The wrapped event is a JSON value; deserialise to
+                    // an Envelope so the subscriber gets typed access.
+                    if let Ok(inner_env) = serde_json::from_value::<Envelope>(p.event.clone()) {
+                        let _ = forwarder.send(inner_env);
+                    }
+                }
+            }
+            return;
+        }
+
+        let Some(corr) = env.correlation_id.clone() else {
+            return;
+        };
+        match env.payload {
+            MessageType::JobAccepted(JobAcceptedPayload { job_id, .. }) => {
+                if let Some((_, tx)) = inner.pending_accepted.remove(&corr) {
+                    let _ = tx.send(Ok(job_id));
+                }
+            }
+            MessageType::JobCompleted(JobCompletedPayload { value, .. }) => {
+                if let Some(mut entry) = inner.pending_jobs.get_mut(&corr) {
+                    if let Some(tx) = entry.take() {
+                        let _ = tx.send(Ok(value.unwrap_or(serde_json::Value::Null)));
+                    }
+                }
+            }
+            MessageType::JobFailed(JobFailedPayload { code, message, .. }) => {
+                // A `job.failed` that arrives before `job.accepted`
+                // (e.g. invalid agent reference, agent version not
+                // available, credential provisioning failure) MUST
+                // unblock `invoke` instead of leaving its caller
+                // parked on `pending_accepted` forever.
+                let err_for_accepted = ARCPError::Unknown {
+                    detail: format!("job failed before accept ({code}): {message}"),
+                };
+                if let Some((_, tx)) = inner.pending_accepted.remove(&corr) {
+                    let _ = tx.send(Err(err_for_accepted));
+                }
+                if let Some(mut entry) = inner.pending_jobs.get_mut(&corr) {
+                    if let Some(tx) = entry.take() {
+                        let _ = tx.send(Err(ARCPError::Unknown {
+                            detail: format!("job failed ({code}): {message}"),
+                        }));
+                    }
+                }
+            }
+            MessageType::JobCancelled(p) => {
+                let reason = p.reason.unwrap_or_default();
+                // Pre-acceptance cancel (rare but possible) must
+                // also unblock the invoke caller.
+                if let Some((_, tx)) = inner.pending_accepted.remove(&corr) {
+                    let _ = tx.send(Err(ARCPError::Cancelled {
+                        reason: reason.clone(),
+                    }));
+                }
+                if let Some(mut entry) = inner.pending_jobs.get_mut(&corr) {
+                    if let Some(tx) = entry.take() {
+                        let _ = tx.send(Err(ARCPError::Cancelled { reason }));
+                    }
+                }
+            }
+            MessageType::ArtifactRef(crate::messages::ArtifactRefPayload { artifact }) => {
+                if let Some((_, tx)) = inner.pending_artifact.remove(&corr) {
+                    let _ = tx.send(ArtifactReply::Ref(artifact));
+                }
+            }
+            MessageType::ArtifactPut(ArtifactPutPayload {
+                media_type, data, ..
+            }) => {
+                if let Some((_, tx)) = inner.pending_artifact.remove(&corr) {
+                    let _ = tx.send(ArtifactReply::Inline { data, media_type });
+                }
+            }
+            MessageType::Nack(payload) => {
+                // A nack can resolve a pending artifact request or
+                // unblock an in-flight `tool.invoke` whose runtime
+                // refused it before accepting.
+                if let Some((_, tx)) = inner.pending_accepted.remove(&corr) {
+                    let _ = tx.send(Err(ARCPError::Unknown {
+                        detail: format!("nack ({}): {}", payload.code, payload.message),
+                    }));
+                }
+                if let Some((_, tx)) = inner.pending_artifact.remove(&corr) {
+                    let _ = tx.send(ArtifactReply::Nack(payload));
+                }
+            }
+            MessageType::SubscribeAccepted(p) => {
+                if let Some((_, tx)) = inner.pending_subscribe.remove(&corr) {
+                    let _ = tx.send(p.subscription_id);
+                }
+            }
+            _ => { /* ignore intermediate events for now */ }
+        }
+    }
+
     async fn reader_loop(inner: Arc<SessionInner<T>>) {
         while let Ok(Some(env)) = inner.transport.recv().await {
-            // Subscription delivery doesn't need a correlation_id; route
-            // by subscription_id from the envelope metadata.
-            if let MessageType::SubscribeEvent(p) = &env.payload {
-                if let Some(sub_id) = env.subscription_id.as_ref() {
-                    if let Some(forwarder) = inner.active_subscriptions.get(sub_id) {
-                        // The wrapped event is a JSON value; deserialise to
-                        // an Envelope so the subscriber gets typed access.
-                        if let Ok(inner_env) = serde_json::from_value::<Envelope>(p.event.clone()) {
-                            let _ = forwarder.send(inner_env);
-                        }
-                    }
-                }
-                continue;
-            }
-
-            let Some(corr) = env.correlation_id.clone() else {
-                continue;
-            };
-            match env.payload {
-                MessageType::JobAccepted(JobAcceptedPayload { job_id, .. }) => {
-                    if let Some((_, tx)) = inner.pending_accepted.remove(&corr) {
-                        let _ = tx.send(Ok(job_id));
-                    }
-                }
-                MessageType::JobCompleted(JobCompletedPayload { value, .. }) => {
-                    if let Some(mut entry) = inner.pending_jobs.get_mut(&corr) {
-                        if let Some(tx) = entry.take() {
-                            let _ = tx.send(Ok(value.unwrap_or(serde_json::Value::Null)));
-                        }
-                    }
-                }
-                MessageType::JobFailed(JobFailedPayload { code, message, .. }) => {
-                    // A `job.failed` that arrives before `job.accepted`
-                    // (e.g. invalid agent reference, agent version not
-                    // available, credential provisioning failure) MUST
-                    // unblock `invoke` instead of leaving its caller
-                    // parked on `pending_accepted` forever.
-                    let err_for_accepted = ARCPError::Unknown {
-                        detail: format!("job failed before accept ({code}): {message}"),
-                    };
-                    if let Some((_, tx)) = inner.pending_accepted.remove(&corr) {
-                        let _ = tx.send(Err(err_for_accepted));
-                    }
-                    if let Some(mut entry) = inner.pending_jobs.get_mut(&corr) {
-                        if let Some(tx) = entry.take() {
-                            let _ = tx.send(Err(ARCPError::Unknown {
-                                detail: format!("job failed ({code}): {message}"),
-                            }));
-                        }
-                    }
-                }
-                MessageType::JobCancelled(p) => {
-                    let reason = p.reason.unwrap_or_default();
-                    // Pre-acceptance cancel (rare but possible) must
-                    // also unblock the invoke caller.
-                    if let Some((_, tx)) = inner.pending_accepted.remove(&corr) {
-                        let _ = tx.send(Err(ARCPError::Cancelled {
-                            reason: reason.clone(),
-                        }));
-                    }
-                    if let Some(mut entry) = inner.pending_jobs.get_mut(&corr) {
-                        if let Some(tx) = entry.take() {
-                            let _ = tx.send(Err(ARCPError::Cancelled { reason }));
-                        }
-                    }
-                }
-                MessageType::ArtifactRef(crate::messages::ArtifactRefPayload { artifact }) => {
-                    if let Some((_, tx)) = inner.pending_artifact.remove(&corr) {
-                        let _ = tx.send(ArtifactReply::Ref(artifact));
-                    }
-                }
-                MessageType::ArtifactPut(ArtifactPutPayload {
-                    media_type, data, ..
-                }) => {
-                    if let Some((_, tx)) = inner.pending_artifact.remove(&corr) {
-                        let _ = tx.send(ArtifactReply::Inline { data, media_type });
-                    }
-                }
-                MessageType::Nack(payload) => {
-                    // A nack can resolve a pending artifact request or
-                    // unblock an in-flight `tool.invoke` whose runtime
-                    // refused it before accepting.
-                    if let Some((_, tx)) = inner.pending_accepted.remove(&corr) {
-                        let _ = tx.send(Err(ARCPError::Unknown {
-                            detail: format!("nack ({}): {}", payload.code, payload.message),
-                        }));
-                    }
-                    if let Some((_, tx)) = inner.pending_artifact.remove(&corr) {
-                        let _ = tx.send(ArtifactReply::Nack(payload));
-                    }
-                }
-                MessageType::SubscribeAccepted(p) => {
-                    if let Some((_, tx)) = inner.pending_subscribe.remove(&corr) {
-                        let _ = tx.send(p.subscription_id);
-                    }
-                }
-                _ => { /* ignore intermediate events for now */ }
-            }
+            Self::dispatch_envelope(&inner, env);
         }
         // Transport closed (or recv errored). Resolve every pending
         // request with `Unavailable` so no caller hangs on a oneshot
