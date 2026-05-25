@@ -1,0 +1,50 @@
+[package]
+name = "arcp-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/arcp-client"
+description = "Reference client (consumer side) for the Agent Runtime Control Protocol (ARCP) — ARCPClient, type-state Session, job and stream handles."
+keywords = ["arcp", "agent", "protocol", "client", "rfc"]
+categories = ["network-programming", "asynchronous", "api-bindings"]
+readme = "README.md"
+include = [
+    "src/**/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+
+[features]
+default = ["transport-ws", "transport-stdio"]
+transport-ws = ["arcp-core/transport-ws"]
+transport-stdio = ["arcp-core/transport-stdio"]
+
+[dependencies]
+arcp-core = { workspace = true }
+
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+ulid = { workspace = true }
+dashmap = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tokio-test = { workspace = true }
+pretty_assertions = { workspace = true }
+
+[lints]
+workspace = true

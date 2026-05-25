@@ -1,0 +1,62 @@
+[package]
+name = "arcp-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/arcp-runtime"
+description = "Reference runtime (server side) for the Agent Runtime Control Protocol (ARCP) — ARCPRuntime, job / session machinery, persistent store, auth validators, and the `arcp` CLI."
+keywords = ["arcp", "agent", "protocol", "runtime", "server"]
+categories = ["network-programming", "asynchronous", "api-bindings"]
+readme = "README.md"
+include = [
+    "src/**/*.rs",
+    "src/store/schema.sql",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+
+[[bin]]
+name = "arcp"
+path = "src/bin/arcp.rs"
+
+[features]
+default = ["transport-ws", "transport-stdio"]
+transport-ws = ["arcp-core/transport-ws", "dep:tokio-tungstenite"]
+transport-stdio = ["arcp-core/transport-stdio"]
+
+[dependencies]
+arcp-core = { workspace = true }
+
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+ulid = { workspace = true }
+dashmap = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+rusqlite = { workspace = true }
+jsonwebtoken = { workspace = true }
+tokio-tungstenite = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tokio-test = { workspace = true }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

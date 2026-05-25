@@ -1,0 +1,54 @@
+[package]
+name = "arcp-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/arcp-core"
+description = "Shared protocol primitives for the Agent Runtime Control Protocol (ARCP) — envelopes, messages, errors, IDs, transports, and the authenticator trait."
+keywords = ["arcp", "agent", "protocol", "runtime", "rfc"]
+categories = ["network-programming", "asynchronous", "api-bindings"]
+readme = "README.md"
+include = [
+    "src/**/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+
+[features]
+default = ["transport-ws", "transport-stdio"]
+transport-ws = ["dep:tokio-tungstenite"]
+transport-stdio = []
+
+[dependencies]
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+ulid = { workspace = true }
+dashmap = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+
+# Optional transport
+tokio-tungstenite = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tokio-test = { workspace = true }
+pretty_assertions = { workspace = true }
+insta = { workspace = true }
+async-trait = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,27 @@
+[package]
+name = "arcp-axum"
+version = "0.1.0-alpha.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/arcp-axum"
+description = "axum integration for the Agent Runtime Control Protocol (ARCP). Placeholder — integration coming in a future release."
+keywords = ["arcp", "axum", "agent", "protocol", "websocket"]
+categories = ["network-programming", "asynchronous", "web-programming"]
+readme = "README.md"
+include = [
+    "src/**/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+
+[dependencies]
+arcp-core = { workspace = true }
+
+[lints]
+workspace = true

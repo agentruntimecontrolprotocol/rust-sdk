@@ -1,0 +1,27 @@
+[package]
+name = "arcp-otel"
+version = "0.1.0-alpha.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/arcp-otel"
+description = "OpenTelemetry middleware for the Agent Runtime Control Protocol (ARCP). Placeholder — integration coming in a future release."
+keywords = ["arcp", "opentelemetry", "tracing", "observability", "agent"]
+categories = ["network-programming", "asynchronous", "development-tools::debugging"]
+readme = "README.md"
+include = [
+    "src/**/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+
+[dependencies]
+arcp-core = { workspace = true }
+
+[lints]
+workspace = true

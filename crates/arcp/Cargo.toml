@@ -1,0 +1,168 @@
+[package]
+name = "arcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/arcp"
+description = "Reference implementation of the Agent Runtime Control Protocol (ARCP) v1.1 — umbrella crate that re-exports arcp-core, arcp-client, and arcp-runtime."
+keywords = ["arcp", "agent", "protocol", "runtime", "rfc"]
+categories = ["network-programming", "asynchronous", "api-bindings"]
+readme = "README.md"
+include = [
+    "src/**/*.rs",
+    "examples/**/*.rs",
+    "examples/**/README.md",
+    "tests/**/*.rs",
+    "tests/snapshots/*.snap",
+    "Cargo.toml",
+    "README.md",
+    "CONFORMANCE.md",
+    "CHANGELOG.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+
+[features]
+# Off by default: most consumers want both client and runtime. Toggle these
+# off via `default-features = false` to slim down compile time, then opt
+# back into just the side(s) you need.
+default = ["client", "runtime", "transport-ws", "transport-stdio"]
+client = ["dep:arcp-client"]
+runtime = ["dep:arcp-runtime"]
+transport-ws = [
+    "arcp-core/transport-ws",
+    "arcp-client?/transport-ws",
+    "arcp-runtime?/transport-ws",
+]
+transport-stdio = [
+    "arcp-core/transport-stdio",
+    "arcp-client?/transport-stdio",
+    "arcp-runtime?/transport-stdio",
+]
+
+[dependencies]
+arcp-core = { workspace = true }
+arcp-client = { workspace = true, optional = true }
+arcp-runtime = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-test = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-test = { workspace = true }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+insta = { workspace = true }
+clap = { workspace = true }
+ulid = { workspace = true }
+rusqlite = { workspace = true }
+jsonwebtoken = { workspace = true }
+dashmap = { workspace = true }
+
+# Multi-file examples — single-file ones are picked up automatically by Cargo.
+[[example]]
+name = "subscriptions"
+path = "examples/subscriptions/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "leases"
+path = "examples/leases/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "lease_revocation"
+path = "examples/lease_revocation/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "permission_challenge"
+path = "examples/permission_challenge/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "delegation"
+path = "examples/delegation/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "handoff"
+path = "examples/handoff/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "heartbeats"
+path = "examples/heartbeats/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "resumability"
+path = "examples/resumability/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "reasoning_streams"
+path = "examples/reasoning_streams/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "mcp"
+path = "examples/mcp/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "session_heartbeat"
+path = "examples/session_heartbeat/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "session_ack"
+path = "examples/session_ack/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "session_list_jobs"
+path = "examples/session_list_jobs/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "agent_versions"
+path = "examples/agent_versions/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "job_subscribe"
+path = "examples/job_subscribe/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "result_chunk"
+path = "examples/result_chunk/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "cost_budget"
+path = "examples/cost_budget/main.rs"
+required-features = ["client", "runtime"]
+
+[[example]]
+name = "provisioned_credentials"
+path = "examples/provisioned_credentials/main.rs"
+required-features = ["client", "runtime"]
+
+[lints]
+workspace = true
