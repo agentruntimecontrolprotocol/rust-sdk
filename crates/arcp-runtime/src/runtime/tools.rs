@@ -16,7 +16,7 @@ use arcp_core::error::ARCPError;
 /// Application-supplied tool handler.
 ///
 /// Implementations should poll `cancel` at safe checkpoints to honour
-/// cooperative cancellation (RFC §10.4).
+/// cooperative cancellation (ARCP v1.1 §7.4).
 #[async_trait]
 pub trait ToolHandler: Send + Sync {
     /// Tool identifier (matches `tool.invoke.payload.tool`).

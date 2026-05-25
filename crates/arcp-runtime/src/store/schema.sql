@@ -1,4 +1,5 @@
--- ARCP event log schema (RFC §6.4 idempotency, §13.3 backfill, §19 resume).
+-- ARCP event log schema. Backs transport-level dedup, ARCP v1.1 §7.6
+-- subscription backfill, and ARCP v1.1 §6.3 resume.
 --
 -- One row per envelope. (session_id, id) is the dedup key for transport
 -- idempotency; rowid (auto-incrementing) gives total replay order. The

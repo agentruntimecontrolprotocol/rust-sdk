@@ -1,4 +1,4 @@
-//! Canonical message envelope (RFC §6.1).
+//! Canonical message envelope (ARCP v1.1 §5).
 //!
 //! Every wire-level ARCP message is an [`Envelope`]. The protocol metadata
 //! lives at the envelope level; the type-specific body lives in
@@ -11,9 +11,10 @@
 //! - [`Envelope`] — typed; `payload` is a [`MessageType`].
 //! - [`RawEnvelope`] — untyped; `payload` is a `serde_json::Value` and
 //!   `type` is a free-form string. The transport boundary uses this when
-//!   it needs to inspect the message before committing to a type (e.g.
-//!   to apply RFC §21.3 unknown-message handling without a deserialise
-//!   error).
+//!   it needs to inspect the message before committing to a type — useful
+//!   for the §5 forward-compatibility rule that unknown top-level fields
+//!   MUST be ignored, and for the SDK's extension classification (see
+//!   [`crate::extensions`]).
 //!
 //! The two are interconvertible via [`Envelope::into_raw`] /
 //! [`RawEnvelope::try_into_typed`].
@@ -27,7 +28,8 @@ use crate::ids::{
 use crate::messages::MessageType;
 use crate::PROTOCOL_VERSION;
 
-/// Message priority class (RFC §6.5).
+/// Message priority class (SDK extension; not in the ARCP v1.1 wire
+/// surface).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Priority {
@@ -38,11 +40,11 @@ pub enum Priority {
     Normal,
     /// Above-default priority.
     High,
-    /// Reserved for messages that must not be deferred (RFC §6.5).
+    /// Reserved for messages that must not be deferred.
     Critical,
 }
 
-/// Typed protocol envelope (RFC §6.1).
+/// Typed protocol envelope (ARCP v1.1 §5).
 ///
 /// `payload` is `#[serde(flatten)]`-embedded so the wire form is flat:
 ///
@@ -57,8 +59,7 @@ pub struct Envelope {
     /// Protocol version understood by the sender.
     pub arcp: String,
 
-    /// Globally unique message id; transport-level idempotency key
-    /// (RFC §6.4).
+    /// Globally unique message id; transport-level dedup key.
     pub id: MessageId,
 
     /// Sender timestamp in RFC 3339 format.
@@ -108,7 +109,7 @@ pub struct Envelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub causation_id: Option<MessageId>,
 
-    /// Logical idempotency key for the command intent (RFC §6.4).
+    /// Logical idempotency key for the command intent (ARCP v1.1 §7.2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<IdempotencyKey>,
 
@@ -116,7 +117,9 @@ pub struct Envelope {
     #[serde(default, skip_serializing_if = "is_default_priority")]
     pub priority: Priority,
 
-    /// Object of namespaced extension fields (RFC §21).
+    /// Object of namespaced extension fields. v1.1 defers a formal
+    /// extension-namespace registry; the SDK's naming convention lives
+    /// in [`crate::extensions`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<serde_json::Value>,
 
@@ -187,9 +190,10 @@ impl Envelope {
 /// Untyped envelope used at the transport boundary.
 ///
 /// Carries a free-form `type` and an opaque `payload`, plus the same
-/// metadata fields as [`Envelope`]. Lets the transport apply RFC §21.3
-/// unknown-message handling without triggering a deserialise error on
-/// the typed enum.
+/// metadata fields as [`Envelope`]. Lets the transport apply ARCP v1.1
+/// §5 forward-compatibility (unknown top-level fields MUST be ignored)
+/// and dispatch unknown `type` strings through [`crate::extensions`]
+/// without triggering a deserialise error on the typed enum.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawEnvelope {
     /// Protocol version understood by the sender.
@@ -256,8 +260,9 @@ pub struct RawEnvelope {
 impl RawEnvelope {
     /// Attempt to upgrade to a typed [`Envelope`]. The caller is responsible
     /// for first checking the `type_name` against the extension registry
-    /// (see [`crate::extensions`]) so unknown types can be handled per
-    /// §21.3 instead of failing the deserialise.
+    /// (see [`crate::extensions`]) so unknown types can be classified and
+    /// dispatched (drop, NACK, or forward) instead of failing the
+    /// deserialise.
     ///
     /// # Errors
     ///
@@ -362,7 +367,7 @@ mod tests {
     #[test]
     fn raw_envelope_unknown_type_does_not_fail_decode() {
         // Demonstrates the value of the raw layer: an unknown wire type
-        // can still be parsed at the raw level for §21.3 dispatch.
+        // can still be parsed at the raw level for extension dispatch.
         let wire = serde_json::json!({
             "arcp": "1.1",
             "id": "msg_01JABC0123456789ABCDEFGHJK",

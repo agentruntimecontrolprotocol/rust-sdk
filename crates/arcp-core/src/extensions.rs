@@ -1,4 +1,11 @@
-//! Extension namespace registry and unknown-message classification (RFC §21).
+//! Extension namespace registry and unknown-message classification.
+//!
+//! ARCP v1.1 §5 mandates that implementations MUST ignore unknown top-level
+//! envelope fields for forward compatibility, and §15 (IANA Considerations)
+//! lists feature-flag and capability namespaces proposed for registration.
+//! v1.1 deferred a formal extension-namespace registry; this module is the
+//! SDK's local convention for naming and dispatching vendor extensions on
+//! top of those forward-compat rules.
 //!
 //! Two responsibilities live here:
 //!
@@ -7,7 +14,10 @@
 //!    (recommended) or a reverse-DNS prefix such as `com.acme.workflow.v2`.
 //! 2. **Type classification.** Given a wire-level `type` string, what should
 //!    a receiver do? [`classify_type`] returns a [`TypeClassification`] that
-//!    drives the dispatch decision per §21.3.
+//!    drives the dispatch decision: process normally for core/known
+//!    extensions; respond with `nack` `UNIMPLEMENTED` for unknown extensions
+//!    (or drop silently if marked `extensions.optional: true`); drop
+//!    transport-internal `x-…` fields silently.
 //!
 //! The bare `x-` prefix is reserved for transport-internal experimental
 //! fields and MUST NOT appear on long-lived deployments. We accept it for
@@ -20,7 +30,8 @@ use std::sync::OnceLock;
 ///
 /// This is used by the transport / dispatch layers to decide between
 /// "process normally", "respond with `nack` `UNIMPLEMENTED`", and
-/// "silently drop", per RFC §21.3.
+/// "silently drop". The decision combines ARCP v1.1 §5 forward-compatible
+/// envelope handling with the SDK's local namespace conventions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeClassification {
     /// A core protocol type that the receiver MUST implement. If unknown to
@@ -40,7 +51,8 @@ pub enum TypeClassification {
     Malformed,
 }
 
-/// Per-session/runtime registry of advertised extension names (§7, §21.2).
+/// Per-session/runtime registry of advertised extension names (carried on
+/// `Capabilities` during the §6.2 hello/welcome handshake).
 ///
 /// Construct one per session; the runtime's session bookkeeping owns it.
 #[derive(Debug, Clone, Default)]

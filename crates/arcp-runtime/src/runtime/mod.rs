@@ -1,14 +1,17 @@
 //! ARCP runtime — the server side of the protocol.
 //!
-//! Phase 2 ships:
-//!
-//! - [`server::ARCPRuntime`] — accepts a [`Transport`][arcp_core::transport::Transport],
-//!   drives the four-step handshake (RFC §8.1), and dispatches subsequent
-//!   envelopes by exhaustive match on [`MessageType`][arcp_core::messages::MessageType].
+//! - [`server::ARCPRuntime`] — accepts a
+//!   [`Transport`][arcp_core::transport::Transport], drives the ARCP v1.1
+//!   §6.2 hello/welcome handshake (which the SDK serializes as
+//!   `session.open` / `session.accepted`, optionally with an SDK-extension
+//!   challenge/authenticate pair between them), and dispatches subsequent
+//!   envelopes by exhaustive match on
+//!   [`MessageType`][arcp_core::messages::MessageType].
 //! - [`session::SessionState`] — tracked per-session bookkeeping.
-//!
-//! Job state machines, streams, subscriptions, leases, and artifacts land
-//! in Phases 3–5.
+//! - [`job::JobRegistry`] — §7 job lifecycle.
+//! - [`subscription::SubscriptionManager`] — §7.6 cross-session subscription.
+//! - [`credentials`] — §9.8 provisioned credentials.
+//! - [`artifact::ArtifactStore`] — SDK extension; no v1.1 normative analog.
 
 pub mod artifact;
 pub mod context;

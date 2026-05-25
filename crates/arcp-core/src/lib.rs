@@ -3,8 +3,9 @@
 //! This crate ships the wire-format types and abstractions both client and
 //! runtime sides depend on:
 //!
-//! - [`envelope`] — the canonical envelope (RFC §6.1).
-//! - [`messages`] — payload structs and [`MessageType`] (RFC §6.2).
+//! - [`envelope`] — the canonical envelope (ARCP v1.1 §5).
+//! - [`messages`] — payload structs and [`MessageType`] for the §6–§10
+//!   surfaces (sessions, jobs, events, leases, delegation).
 //! - [`error`] — canonical error taxonomy.
 //! - [`ids`] — strongly-typed opaque identifiers (`JobId`, `SessionId`, …).
 //! - [`extensions`] — extension namespace registry and classification.
@@ -36,7 +37,7 @@ pub use extensions::{ExtensionRegistry, TypeClassification};
 pub use messages::{Capabilities, MessageType};
 
 /// Protocol version implemented by this crate, as carried in the `arcp` field
-/// of every envelope (RFC §6.1).
+/// of every envelope (ARCP v1.1 §5).
 pub const PROTOCOL_VERSION: &str = "1.1";
 
 /// Implementation version of this crate, derived from `Cargo.toml`. Sibling
@@ -45,5 +46,5 @@ pub const PROTOCOL_VERSION: &str = "1.1";
 pub const IMPL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Implementation kind reported in `runtime.kind` / `client.kind` blocks
-/// (RFC §8.2, §8.3).
+/// (ARCP v1.1 §6.2 hello/welcome handshake).
 pub const IMPL_KIND: &str = "arcp-rs";

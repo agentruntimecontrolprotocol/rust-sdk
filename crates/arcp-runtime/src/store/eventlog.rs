@@ -12,9 +12,10 @@
 //!
 //! - [`EventLog::append`] inserts an envelope row and returns whether it
 //!   was a new insert. A repeat insert with the same `(session_id, id)` is
-//!   silently absorbed (idempotency, RFC §6.4).
+//!   silently absorbed (transport-level dedup; logical idempotency for
+//!   command intents is ARCP v1.1 §7.2).
 //! - [`EventLog::list`] enumerates rows by `(session_id, after_rowid)` for
-//!   subscription backfill (§13.3) and resume (§19).
+//!   subscription backfill (ARCP v1.1 §7.6) and resume (ARCP v1.1 §6.3).
 //! - [`EventLog::get_by_id`] fetches a single row by message id.
 //!
 //! The synchronous `rusqlite` calls run inside `tokio::task::spawn_blocking`
@@ -56,7 +57,8 @@ pub enum AppendOutcome {
     /// Row was inserted.
     Inserted,
     /// A row with the same `(session_id, id)` already existed; the insert
-    /// was a no-op (transport idempotency, RFC §6.4).
+    /// was a no-op (transport-level dedup; not the same as ARCP v1.1 §7.2
+    /// logical idempotency on `tool.invoke.idempotency_key`).
     Duplicate,
 }
 

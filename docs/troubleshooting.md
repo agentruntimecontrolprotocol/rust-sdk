@@ -80,14 +80,19 @@ Fix: enable the needed feature or gate your own imports with matching
 
 ## Publish dry-run fails on stale generated files
 
-Run the standard gate from the repository root:
+Run the standard gate from the repository root. The workspace has multiple
+publishable crates, so `cargo publish --dry-run` needs to be iterated in
+dependency order (downstream crates resolve internal deps to versions
+already on crates.io, so the dry-run only succeeds incrementally):
 
 ```sh
 cargo fmt --all -- --check
-cargo test --all-features
-cargo publish --dry-run
+cargo test --workspace --all-features
+for crate in arcp-core arcp-client arcp-runtime arcp arcp-tower arcp-axum arcp-actix-web arcp-otel; do
+    cargo publish --dry-run -p "$crate"
+done
 ```
 
-Then inspect the packaged file list. `Cargo.toml` controls the crate include
-set; docs under `docs/` are repository docs and are not part of the crate
-package unless the include list is expanded.
+Then inspect the packaged file list per crate. Each crate's `Cargo.toml`
+controls its include set; docs under `docs/` are repository docs and are
+not part of any crate package unless that crate's include list is expanded.

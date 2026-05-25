@@ -9,8 +9,8 @@
 //! - [`arcp_runtime`][arcp_runtime] — [`ARCPRuntime`], job machinery,
 //!   `SQLite` store, bearer / JWT / none auth validators.
 //!
-//! See `CONFORMANCE.md` for per-section RFC status and `docs/` for
-//! narrative guides.
+//! See [`CONFORMANCE.md`][conformance] for the per-section ARCP v1.1
+//! coverage matrix and `docs/` for narrative guides.
 //!
 //! ## Scope
 //!
@@ -20,10 +20,16 @@
 //! error taxonomy, observability primitives, and the `WebSocket`, stdio, and
 //! in-memory transports.
 //!
-//! Out-of-scope items (`HTTP/2`, `QUIC`, `mTLS`, `OAuth2`, sidecar binary
-//! frames, scheduled jobs, multi-agent delegation, workflows, trust
-//! elevation, checkpoint-based resume) return `ARCPError::Unimplemented`
-//! when invoked.
+//! Deferred surfaces (see [`CONFORMANCE.md`][conformance]): `HTTP/2` and
+//! `QUIC` transports; native `mTLS` and `OAuth2` authenticators; native
+//! OpenTelemetry middleware (`arcp-otel` is a reservation stub today);
+//! sidecar binary stream frames outside the JSON envelope path; scheduled
+//! jobs, workflow orchestration, and trust elevation beyond the v1.1 core.
+//! Methods or types that fall in these areas are simply not exported from
+//! this crate; entry points that the runtime exposes but cannot satisfy
+//! (e.g. an unknown extension type) surface as `ARCPError::Unimplemented`.
+//!
+//! [conformance]: https://github.com/agentruntimecontrolprotocol/rust-sdk/blob/main/CONFORMANCE.md
 //!
 //! ## Cargo features
 //!
@@ -38,6 +44,15 @@
 //! ```
 //!
 //! ## Example
+//!
+//! The snippet below exercises the simplest path — hello/welcome handshake
+//! over the in-memory `paired()` transport and one `tool.invoke`. It
+//! intentionally does not exercise heartbeats (ARCP v1.1 §6.4), event ack
+//! (§6.5), or resume (§6.3); the in-memory transport never drops, so those
+//! surfaces are no-ops here. For runnable examples that exercise them, see
+//! [`crates/arcp/tests/`][tests].
+//!
+//! [tests]: https://github.com/agentruntimecontrolprotocol/rust-sdk/tree/main/crates/arcp/tests
 //!
 //! ```
 //! # #[cfg(all(feature = "client", feature = "runtime"))]
@@ -101,7 +116,8 @@
 // Re-export modules from arcp-core at their canonical paths.
 pub use arcp_core::{envelope, error, extensions, ids, messages, transport};
 
-/// Authentication scheme adapters (RFC §8.2).
+/// Authentication scheme adapters. ARCP v1.1 §6.1 normatively defines
+/// only `bearer`; `signed_jwt` and `none` are SDK extensions.
 ///
 /// The [`Authenticator`][arcp_core::auth::Authenticator] trait,
 /// [`AuthOutcome`][arcp_core::auth::AuthOutcome], and

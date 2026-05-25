@@ -1,4 +1,8 @@
-//! `signed_jwt` authentication scheme (RFC §8.2).
+//! `signed_jwt` authentication scheme — SDK extension.
+//!
+//! ARCP v1.1 §6.1 defines only bearer; signed JWT is provided here as a
+//! non-normative convenience for runtimes that want JWT validation without
+//! rolling it into the bearer authenticator.
 
 use async_trait::async_trait;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};

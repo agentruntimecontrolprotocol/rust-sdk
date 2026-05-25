@@ -1,19 +1,20 @@
-//! Canonical error model (RFC §18).
+//! Canonical error model (ARCP v1.1 §12).
 //!
 //! Two layered types:
 //!
-//! - [`ErrorCode`] — the wire-level taxonomy from §18.2 as a
+//! - [`ErrorCode`] — the wire-level taxonomy from §12 as a
 //!   `#[non_exhaustive]` enum. Exists so the runtime, the client, and
 //!   external code can pattern-match on a single source of truth.
 //! - [`ARCPError`] — the in-process `Result<_, _>` error returned from
 //!   library APIs. Each variant maps onto an `ErrorCode` via
 //!   [`ARCPError::code`] and carries enough context to reconstruct an
-//!   error envelope (§18.1) without a second lookup.
+//!   error envelope without a second lookup.
 //!
-//! The [`ARCPError::retryable`] method follows the RFC §18.3 default
-//! taxonomy. Callers MAY override per-call via the returned envelope's
-//! `retryable` field, but the in-process default is what `retryable()`
-//! reports.
+//! The [`ARCPError::retryable`] method follows the §12 default taxonomy:
+//! `LEASE_EXPIRED` and `BUDGET_EXHAUSTED` MUST be `retryable: false`;
+//! `INTERNAL_ERROR` is always retryable. Callers MAY override per-call via
+//! the returned envelope's `retryable` field, but the in-process default
+//! is what `retryable()` reports.
 
 use std::fmt;
 

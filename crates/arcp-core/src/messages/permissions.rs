@@ -1,4 +1,8 @@
-//! Permission challenge and lease lifecycle (RFC §15).
+//! Permission challenge and lease lifecycle (ARCP v1.1 §9).
+//!
+//! Capability grammar lives at §9.2; enforcement at §9.3; subsetting at
+//! §9.4; expiration at §9.5; budgets at §9.6; model use at §9.7;
+//! provisioned credentials at §9.8.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -539,7 +543,7 @@ mod lease_request_tests {
     }
 }
 
-/// Trust level (RFC §15.3).
+/// Trust level (ARCP v1.1 §9; capability model).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrustLevel {
@@ -553,7 +557,8 @@ pub enum TrustLevel {
     Privileged,
 }
 
-/// Payload for `permission.request` (RFC §15.4).
+/// Payload for `permission.request` (SDK extension; v1.1 §9 expresses
+/// lease requests on `job.submit` payloads).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionRequestPayload {
     /// Permission name (e.g. `payment.refund.create`).
@@ -592,7 +597,7 @@ pub struct PermissionDenyPayload {
     pub reason: String,
 }
 
-/// Payload for `lease.granted` (RFC §15.5).
+/// Payload for `lease.granted` (ARCP v1.1 §9; see also §9.5 expiration).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseGrantedPayload {
     /// Newly minted lease id.

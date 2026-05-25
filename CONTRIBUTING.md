@@ -31,9 +31,10 @@ Concretely:
 - **Don't invent wire behavior.** No envelope fields, event kinds, error codes,
   or feature flags that the spec doesn't define. If you need one, it's a spec
   proposal first.
-- **Negotiate honestly.** Only advertise a feature flag in `session.hello` once
-  the SDK actually implements it. The feature matrix in the README must match
-  what the code negotiates — a row marked `Supported` is a promise.
+- **Negotiate honestly.** Only advertise a feature flag in `SessionOpen` (the
+  SDK's serialization of the spec's `session.hello`) once the SDK actually
+  implements it. The feature matrix in the README must match what the code
+  negotiates — a row marked `Supported` is a promise.
 - **Respect the semantics.** Sequence numbers stay gap-free and monotonic;
   `LEASE_EXPIRED` and `BUDGET_EXHAUSTED` stay non-retryable; the effective
   feature set is the intersection of client and runtime advertisements. Tests
@@ -85,8 +86,9 @@ Two layers must pass before a PR merges:
   error mapping) needs a test that exercises the real exchange, not a mock that
   assumes the answer. Integration tests under [`tests/`](tests/) drive the
   in-process runtime end to end; to point them at an out-of-process runtime,
-  start one with `cargo run -- serve --bearer secret-token --principal alice@example.com`
-  and connect the WebSocket transport at `ws://127.0.0.1:8765`. See
+  start one with `cargo run --bin arcp -- serve --bearer secret-token --principal alice@example.com`
+  and connect the WebSocket transport at `ws://127.0.0.1:7777` (the CLI default
+  bind; pass `--bind 127.0.0.1:8765` to use a different port). See
   [`CONFORMANCE.md`](CONFORMANCE.md) for the section-by-section coverage matrix.
 
 CI runs both on every PR. A PR that changes which feature flags the SDK

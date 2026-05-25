@@ -1,4 +1,5 @@
-//! Newtype wrappers for the protocol's identifier fields (RFC §6.1.1).
+//! Newtype wrappers for the protocol's identifier fields (carried in the
+//! envelope; see ARCP v1.1 §5 wire format).
 //!
 //! Identifiers are categorised into two flavours:
 //!
@@ -6,9 +7,9 @@
 //!   is `<prefix>_<ULID>`; the prefix is asserted on parse. Mixing a
 //!   `SessionId` with a `MessageId` is a compile error.
 //! - **Free-form opaque strings** for ids whose format is determined by the
-//!   environment: `TraceId` and `SpanId` (per OpenTelemetry / Datadog /
-//!   Honeycomb conventions, §17.1) and `IdempotencyKey` (client-supplied
-//!   logical intent key, §6.4).
+//!   environment: `TraceId` and `SpanId` (W3C Trace Context propagation,
+//!   ARCP v1.1 §11) and `IdempotencyKey` (client-supplied logical intent
+//!   key, ARCP v1.1 §7.2).
 
 use std::fmt;
 use std::str::FromStr;
@@ -179,42 +180,51 @@ macro_rules! freeform_id {
 prefixed_id!(
     SessionId,
     "sess",
-    "Identifier for an ARCP session (RFC §9)."
+    "Identifier for an ARCP session (ARCP v1.1 §6)."
 );
 prefixed_id!(
     MessageId,
     "msg",
-    "Globally unique envelope identifier (RFC §6.1.1)."
+    "Globally unique envelope identifier (ARCP v1.1 §5)."
 );
-prefixed_id!(JobId, "job", "Identifier for a durable job (RFC §10).");
-prefixed_id!(StreamId, "str", "Identifier for a stream (RFC §11).");
+prefixed_id!(JobId, "job", "Identifier for a durable job (ARCP v1.1 §7).");
+prefixed_id!(
+    StreamId,
+    "str",
+    "Identifier for an SDK stream (no direct v1.1 surface; \
+     ARCP v1.1 §8.4 covers result chunk streaming)."
+);
 prefixed_id!(
     SubscriptionId,
     "sub",
-    "Identifier for an observer subscription (RFC §13)."
+    "Identifier for an observer subscription (ARCP v1.1 §7.6)."
 );
 prefixed_id!(
     LeaseId,
     "lease",
-    "Identifier for a permission lease (RFC §15.5)."
+    "Identifier for a permission lease (ARCP v1.1 §9)."
 );
 prefixed_id!(
     ArtifactId,
     "art",
-    "Identifier for an addressable artifact (RFC §16)."
+    "Identifier for an addressable artifact (SDK feature; not part of the \
+     v1.1 spec surface)."
 );
 
 freeform_id!(
     TraceId,
-    "Distributed-trace identifier (RFC §17.1). Format is environment-defined."
+    "Distributed-trace identifier (ARCP v1.1 §11; W3C Trace Context). \
+     Format is environment-defined."
 );
 freeform_id!(
     SpanId,
-    "Span identifier within a trace (RFC §17.1). Format is environment-defined."
+    "Span identifier within a trace (ARCP v1.1 §11; W3C Trace Context). \
+     Format is environment-defined."
 );
 freeform_id!(
     IdempotencyKey,
-    "Logical idempotency key supplied by the client for a command intent (RFC §6.4)."
+    "Logical idempotency key supplied by the client for a command intent \
+     (ARCP v1.1 §7.2)."
 );
 
 #[cfg(test)]

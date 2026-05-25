@@ -1,7 +1,12 @@
-//! Artifact store (RFC §16).
+//! Artifact store — SDK extension.
 //!
-//! Phase 5 ships an in-memory implementation with inline base64 only.
-//! Retention sweep and SQLite-blob persistence are deferred.
+//! ARCP v1.1 §8.2 defines an `artifact_ref` event kind that carries
+//! `{ uri, content_type, byte_size?, sha256? }`, but the spec does not
+//! mandate any particular storage backend; this module is the SDK's
+//! optional inline-base64 store for that surface.
+//!
+//! The current implementation is in-memory and inline-only. Retention
+//! sweep and SQLite-blob persistence are deferred.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};

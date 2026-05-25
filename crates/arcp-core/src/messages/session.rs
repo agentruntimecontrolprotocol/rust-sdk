@@ -1,4 +1,11 @@
-//! Session lifecycle messages (RFC §8).
+//! Session lifecycle messages (ARCP v1.1 §6).
+//!
+//! ARCP v1.1 §6.2 names the two handshake envelopes `session.hello` and
+//! `session.welcome`; the SDK serializes these as [`SessionOpenPayload`]
+//! and [`SessionAcceptedPayload`] for historical reasons. The
+//! `session.challenge`/`session.authenticate` pair is an SDK extension
+//! beyond v1.1, which collapses authentication to a single bearer token
+//! carried in the hello envelope (§6.1).
 
 use serde::{Deserialize, Serialize};
 
@@ -6,7 +13,8 @@ use crate::error::ErrorCode;
 use crate::ids::SessionId;
 use crate::messages::Capabilities;
 
-/// `auth.scheme` discriminator (RFC §8.2).
+/// `auth.scheme` discriminator. ARCP v1.1 §6.1 defines only `bearer` as
+/// normative; the additional variants are SDK extensions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -33,7 +41,7 @@ pub struct Credentials {
     pub token: Option<String>,
 }
 
-/// Client identity attestation block (RFC §8.2).
+/// Client identity attestation block (ARCP v1.1 §6.2 hello payload).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientIdentity {
     /// Implementation kind, e.g. `"example-client"`.
@@ -48,7 +56,8 @@ pub struct ClientIdentity {
     pub principal: Option<String>,
 }
 
-/// Runtime identity block emitted in `session.accepted` (RFC §8.3).
+/// Runtime identity block emitted in `session.accepted` (ARCP v1.1 §6.2
+/// welcome payload).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeIdentity {
     /// Implementation kind, e.g. `"arcp-rs"`.
@@ -70,7 +79,8 @@ pub struct SessionLease {
     pub expires_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Payload for `session.open` (RFC §8.1 step 1).
+/// Payload for `session.open` (SDK serialization of the ARCP v1.1 §6.2
+/// `session.hello` envelope).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionOpenPayload {
     /// Credentials.
@@ -82,21 +92,24 @@ pub struct SessionOpenPayload {
     pub capabilities: Capabilities,
 }
 
-/// Payload for `session.challenge` (RFC §8.1 step 2).
+/// Payload for `session.challenge` (SDK extension; ARCP v1.1 §6.1 does
+/// not define a challenge / response auth flow).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionChallengePayload {
     /// Free-form challenge nonce / instructions.
     pub challenge: String,
 }
 
-/// Payload for `session.authenticate` (RFC §8.1 step 3).
+/// Payload for `session.authenticate` (SDK extension; pairs with
+/// [`SessionChallengePayload`], not part of ARCP v1.1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionAuthenticatePayload {
     /// Response to the challenge.
     pub response: String,
 }
 
-/// Payload for `session.accepted` (RFC §8.1 step 4).
+/// Payload for `session.accepted` (SDK serialization of the ARCP v1.1
+/// §6.2 `session.welcome` envelope).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionAcceptedPayload {
     /// Newly minted session id.
@@ -142,7 +155,7 @@ pub struct SessionRefreshPayload {
 /// Payload for `session.evicted` — runtime ended the session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionEvictedPayload {
-    /// Reason code (drawn from §18 taxonomy).
+    /// Reason code (drawn from the ARCP v1.1 §12 error taxonomy).
     pub code: ErrorCode,
     /// Free-form reason text.
     pub reason: String,

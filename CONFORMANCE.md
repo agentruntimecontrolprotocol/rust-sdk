@@ -14,7 +14,7 @@ The docs mirror is [`docs/conformance.md`](./docs/conformance.md).
 | §6.3 Resume | Full | SQLite event log supports replay by session and sequence boundary; resumability examples exercise reconnect flows. |
 | §6.4 Heartbeat | Full | `session.ping` / `session.pong` messages and runtime examples are implemented. |
 | §6.5 Ack | Full | Runtime ack window and `session.ack` back-pressure are implemented. |
-| §6.6 List jobs / Subscribe | Full | `session.list_jobs`, `job.subscribe`, `job.unsubscribe`, and generic subscription fanout are implemented. |
+| §6.6 List jobs / Subscribe | Partial | Runtime: `session.list_jobs`, `job.subscribe`, `job.unsubscribe`, and generic subscription fanout are implemented. Client API does not yet expose `list_jobs`/`job.subscribe` as first-class `Session` methods. |
 | §7 Jobs | Full | Submit, accept, start, complete, fail, cancel, state inventory, and idempotent retry paths. |
 | §7.3 State machine | Full | `JobRegistry` tracks pending, running, and terminal states. |
 | §7.4 Cancellation | Full | Cooperative cancellation uses `CancellationToken` and emits cancelled terminal outcomes. |
@@ -47,10 +47,13 @@ Before release, run:
 
 ```sh
 cargo fmt --all -- --check
-cargo check --all-targets --all-features
-cargo test --all-features
-cargo clippy --all-targets --all-features -- -D warnings
-cargo publish --dry-run
+cargo check --workspace --all-targets --all-features
+cargo test --workspace --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+# Publish dry-run iterates the workspace in dependency order:
+for crate in arcp-core arcp-client arcp-runtime arcp arcp-tower arcp-axum arcp-actix-web arcp-otel; do
+    cargo publish --dry-run -p "$crate"
+done
 ```
 
 ## Deferred Surfaces

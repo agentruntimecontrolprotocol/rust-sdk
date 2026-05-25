@@ -12,7 +12,7 @@ Spec reference: [§7](../../../spec/docs/draft-arcp-1.1.md#7-jobs).
 submit-and-await flows. It sends a job request, waits for acceptance, and
 resolves on the terminal result.
 
-See [`examples/submit_and_stream.rs`](../../examples/submit_and_stream.rs).
+See [`crates/arcp/examples/submit_and_stream.rs`](../../crates/arcp/examples/submit_and_stream.rs).
 
 ## Runtime dispatch
 
@@ -30,7 +30,7 @@ The runtime tracks jobs through pending, running, and terminal states in
 Cancellation uses `tokio_util::sync::CancellationToken`. Runtime code signals
 the token; tool code should observe it and stop cooperatively.
 
-See [`examples/cancellation.rs`](../../examples/cancellation.rs).
+See [`crates/arcp/examples/cancellation.rs`](../../crates/arcp/examples/cancellation.rs).
 
 ## Idempotency
 
@@ -39,14 +39,14 @@ crash or reconnect. A duplicate request with identical content collapses to
 the original job; a key collision with different content surfaces as
 `ALREADY_EXISTS`.
 
-See [`examples/idempotent_retry.rs`](../../examples/idempotent_retry.rs).
+See [`crates/arcp/examples/idempotent_retry.rs`](../../crates/arcp/examples/idempotent_retry.rs).
 
 ## Agent versions
 
 Agent references can include versions. A pinned version that the runtime cannot
 serve returns `AGENT_VERSION_NOT_AVAILABLE`.
 
-See [`examples/agent_versions/`](../../examples/agent_versions/).
+See [`crates/arcp/examples/agent_versions/`](../../crates/arcp/examples/agent_versions/).
 
 ## Subscriptions
 
@@ -54,5 +54,5 @@ Clients can observe a job from another session when permitted by runtime
 policy. Use job subscribe/unsubscribe for one job or generic subscriptions for
 filtered envelope streams.
 
-See [`examples/job_subscribe/`](../../examples/job_subscribe/) and
-[`examples/subscriptions/`](../../examples/subscriptions/).
+See [`crates/arcp/examples/job_subscribe/`](../../crates/arcp/examples/job_subscribe/) and
+[`crates/arcp/examples/subscriptions/`](../../crates/arcp/examples/subscriptions/).

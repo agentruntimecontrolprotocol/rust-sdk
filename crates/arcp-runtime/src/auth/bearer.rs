@@ -1,4 +1,8 @@
-//! `bearer` authentication scheme (RFC §8.2).
+//! `bearer` authentication scheme (ARCP v1.1 §6.1).
+//!
+//! Bearer is the only authentication scheme normative in v1.1. The runtime
+//! validates the opaque token carried in `session.open.payload.auth.token`
+//! against its configured trust store and resolves it to a principal.
 
 use std::collections::HashMap;
 

@@ -1,4 +1,5 @@
-//! `none` authentication scheme (RFC §8.2).
+//! `none` authentication scheme — SDK extension beyond ARCP v1.1 §6.1
+//! (which defines only bearer).
 //!
 //! Only valid when `capabilities.anonymous: true` was negotiated. The
 //! runtime MUST refuse otherwise.

@@ -2,8 +2,9 @@
 //!
 //! Ships [`ARCPClient`] and the type-state [`Session`] for opening,
 //! authenticating, and driving a session over any
-//! [`Transport`][arcp_core::transport::Transport]. Job, stream, and
-//! subscription handles hang off `Session<Authenticated>`.
+//! [`Transport`][arcp_core::transport::Transport]. Job and subscription
+//! handles hang off `Session<Authenticated>`; raw streams are surfaced via
+//! subscription events rather than a dedicated stream handle.
 //!
 //! Wire-format types are re-exported from `arcp-core` for ergonomics; most
 //! users should pull in the umbrella `arcp` crate which bundles client +

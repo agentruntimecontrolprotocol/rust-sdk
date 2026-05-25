@@ -1,14 +1,13 @@
-//! Job state machine and dispatch (RFC §10).
+//! Job state machine and dispatch (ARCP v1.1 §7).
 //!
-//! Phase 3 implements the core lifecycle: a `tool.invoke` envelope is
-//! turned into a `Job` that runs in its own tokio task with a
-//! [`CancellationToken`]. The runtime emits `job.accepted`,
-//! `job.started`, then a terminal `job.completed` / `job.failed` /
-//! `job.cancelled`.
+//! A `tool.invoke` envelope is turned into a `Job` that runs in its own
+//! tokio task with a [`CancellationToken`]. The runtime emits `job.accepted`
+//! (§7.1), `job.started`, then a terminal `job.completed` / `job.failed` /
+//! `job.cancelled` (§7.3 terminal states).
 //!
-//! The heartbeat watchdog and hard-kill escalation that the RFC describes
-//! in §10.3 / §10.4 land in a follow-up phase; the cooperative cancel
-//! path is in place via `CancellationToken`.
+//! Cooperative cancellation (§7.4) is wired via `CancellationToken`; a
+//! hard-kill watchdog that fires when a handler ignores the token is not
+//! yet implemented.
 
 use dashmap::DashMap;
 use std::sync::Arc;

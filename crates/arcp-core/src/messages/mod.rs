@@ -1,4 +1,4 @@
-//! Wire-level message payload types (RFC §6.2).
+//! Wire-level message payload types.
 //!
 //! [`MessageType`] is a tagged enum (`#[serde(tag = "type", content =
 //! "payload")]`) so on the wire a message renders flat:
@@ -9,7 +9,8 @@
 //!
 //! When this is `#[serde(flatten)]`-embedded into [`crate::envelope::Envelope`]
 //! the `type` and `payload` keys appear at the envelope level alongside the
-//! other metadata fields, matching the canonical wire format from §6.1.
+//! other metadata fields, matching the canonical wire format from ARCP v1.1
+//! §5. The individual payload modules carry their own §-references.
 
 use std::collections::BTreeMap;
 

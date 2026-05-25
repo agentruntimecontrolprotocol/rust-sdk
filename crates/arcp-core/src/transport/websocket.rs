@@ -1,9 +1,10 @@
-//! WebSocket transport (RFC §22).
+//! WebSocket transport (ARCP v1.1 §4: WebSocket is mandatory for network
+//! deployments).
 //!
 //! Backed by `tokio_tungstenite`. Each ARCP envelope rides as a single
 //! `Text` WebSocket frame containing the envelope's JSON. Sidecar binary
-//! frames (RFC §11.3) are not implemented in v0.1; binary stream chunks
-//! travel in the in-envelope base64 form.
+//! frames are not implemented; binary stream chunks travel in the
+//! in-envelope base64 form (see ARCP v1.1 §8.4 `result_chunk` encoding).
 //!
 //! The connection helpers are intentionally thin:
 //!
@@ -192,7 +193,7 @@ impl Transport for WebSocketTransport {
                     let env: Envelope = serde_json::from_str(text.as_str())?;
                     return Ok(Some(env));
                 }
-                // v0.1 ignores sidecar binary frames (RFC §11.3 deferred);
+                // The SDK ignores sidecar binary frames (not part of v1.1);
                 // tungstenite handles control frames internally.
                 Some(
                     Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_),

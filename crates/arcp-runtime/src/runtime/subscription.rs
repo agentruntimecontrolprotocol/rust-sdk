@@ -1,10 +1,9 @@
-//! Subscription manager (RFC §13).
+//! Subscription manager (ARCP v1.1 §7.6).
 //!
-//! Phase 5 ships a lightweight implementation: every accepted envelope is
-//! published into a `tokio::sync::broadcast` channel. Subscriptions filter
-//! the live tail by type / `session_id` / `job_id`; backfill replays from
-//! the event log. Rich filter authorisation (PLAN.md §A4.10) is reserved
-//! for a follow-up phase.
+//! Every accepted envelope is published into a `tokio::sync::broadcast`
+//! channel. Subscriptions filter the live tail by type / `session_id` /
+//! `job_id`; backfill replays from the event log. Rich filter
+//! authorisation policy lands in a follow-up.
 
 use std::sync::Arc;
 

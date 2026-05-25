@@ -1,4 +1,8 @@
-//! `ARCPClient` and the type-state [`Session<S>`] (RFC §4.6, §8).
+//! `ARCPClient` and the type-state [`Session<S>`].
+//!
+//! Implements the client side of the ARCP v1.1 §6.2 hello/welcome handshake
+//! (serialized as `session.open` / `session.accepted`) and §7 job lifecycle
+//! over an `arcp-core` [`Transport`][arcp_core::transport::Transport].
 
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -103,7 +107,10 @@ impl<S: sealed::State, T: Transport + 'static> std::fmt::Debug for Session<S, T>
 }
 
 impl<T: Transport + 'static> Session<Unauthenticated, T> {
-    /// Drive the four-step handshake (RFC §8.1) and, on success, return a
+    /// Drive the ARCP v1.1 §6.2 hello/welcome handshake (serialized by the
+    /// SDK as `session.open` / `session.accepted`, with an optional
+    /// SDK-extension challenge / authenticate pair between them when the
+    /// configured authenticator requests it) and, on success, return a
     /// [`Session<Authenticated>`].
     ///
     /// On success a background reader task is spawned to dispatch incoming
@@ -362,7 +369,7 @@ impl<T: Transport + 'static> Session<Authenticated, T> {
 
     /// Invoke a tool by name. Returns a [`JobHandle`] the caller can await
     /// for the terminal result, and which carries the runtime-assigned
-    /// [`JobId`] once `job.accepted` arrives (RFC §10).
+    /// [`JobId`] once `job.accepted` arrives (ARCP v1.1 §7).
     ///
     /// # Errors
     ///
@@ -421,7 +428,9 @@ impl<T: Transport + 'static> Session<Authenticated, T> {
         })
     }
 
-    /// Upload an artifact (RFC §16.2). Returns the canonical
+    /// Upload an artifact (SDK extension; ARCP v1.1 §8.2 defines an
+    /// `artifact_ref` event kind but no `artifact.*` envelope surface).
+    /// Returns the canonical
     /// [`ArtifactRef`] the runtime minted.
     ///
     /// `data` must be base64-encoded; the caller is responsible for
@@ -507,7 +516,8 @@ impl<T: Transport + 'static> Session<Authenticated, T> {
         }
     }
 
-    /// Release (delete) an artifact (RFC §16.2). The runtime does not
+    /// Release (delete) an artifact (SDK extension; see the `put_artifact`
+    /// note above). The runtime does not
     /// acknowledge releases; this is fire-and-forget.
     ///
     /// # Errors
@@ -522,8 +532,11 @@ impl<T: Transport + 'static> Session<Authenticated, T> {
         self.inner.transport.send(env).await
     }
 
-    /// Subscribe to runtime events (RFC §13). Returns a
-    /// [`SubscriptionHandle`] yielding live envelopes that match `filter`.
+    /// Subscribe to runtime events via the SDK's generic filtered subscription
+    /// bus. (For per-job subscription as defined by ARCP v1.1 §7.6, see
+    /// `JobSubscribePayload`; that surface is not yet exposed as a first-class
+    /// `Session` method.) Returns a [`SubscriptionHandle`] yielding live
+    /// envelopes that match `filter`.
     ///
     /// # Errors
     ///
@@ -568,7 +581,8 @@ impl<T: Transport + 'static> Session<Authenticated, T> {
     }
 }
 
-/// Handle to a live subscription (RFC §13).
+/// Handle to a live subscription (see the SDK's generic subscription bus;
+/// per-job subscription is ARCP v1.1 §7.6).
 ///
 /// Dropping the handle removes the client-side forwarder and stops local
 /// delivery; it does **not** send an `unsubscribe` envelope. Call
@@ -639,7 +653,7 @@ fn map_nack(p: NackPayload) -> ARCPError {
     }
 }
 
-/// Handle to an in-flight job (RFC §10).
+/// Handle to an in-flight job (ARCP v1.1 §7).
 pub struct JobHandle {
     /// Server-assigned job identifier.
     pub job_id: JobId,

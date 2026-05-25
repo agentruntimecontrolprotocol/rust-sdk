@@ -13,7 +13,7 @@ each subsystem and map back to the
 ## Start here
 
 - [Getting started](./getting-started.md) - install, build a runtime + client, run the examples.
-- [Architecture](./architecture.md) - how the single `arcp` crate is organized.
+- [Architecture](./architecture.md) - how the `arcp` workspace (umbrella `arcp` crate plus `arcp-core` / `arcp-client` / `arcp-runtime` plus reservation stubs) is organized.
 - [Transports](./transports.md) - WebSocket, stdio, in-memory; when to pick each.
 - [CLI](./cli.md) - the `arcp` binary shipped by the crate.
 

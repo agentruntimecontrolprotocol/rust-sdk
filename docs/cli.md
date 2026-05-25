@@ -31,16 +31,13 @@ Current `serve` support is intentionally small: one WebSocket listener, built-in
 anonymous or static bearer auth, and default runtime capabilities for streaming
 and artifacts. Rich host integrations live in application code and examples.
 
-## Tail
+## Tail (placeholder)
 
-`tail` is present as a placeholder for future event-log inspection:
-
-```sh
-cargo run -- tail --session ses_...
-```
-
-The current implementation reports that subscription/event-log tailing is not
-yet wired into the CLI.
+`tail` is a placeholder subcommand reserved for future event-log inspection.
+Invoking it today prints a "not yet wired into the CLI" message and exits
+non-zero — do not script around it. Event-log inspection is available
+programmatically via the `arcp-runtime` `EventLog` API; the CLI surface
+will follow.
 
 ## Logging
 

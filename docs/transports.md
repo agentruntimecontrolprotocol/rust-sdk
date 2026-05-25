@@ -35,8 +35,9 @@ cargo run -- serve --bind 127.0.0.1:7777 --bearer secret-token
 ```
 
 Programmatic hosts accept an upgraded stream and wrap it with
-`WebSocketTransport::accept_stream`. See [`src/bin/arcp.rs`](../src/bin/arcp.rs)
-and [`examples/axum_server.rs`](../examples/axum_server.rs).
+`WebSocketTransport::accept_stream`. See
+[`crates/arcp-runtime/src/bin/arcp.rs`](../crates/arcp-runtime/src/bin/arcp.rs)
+and [`crates/arcp/examples/axum_server.rs`](../crates/arcp/examples/axum_server.rs).
 
 Use WebSocket for:
 

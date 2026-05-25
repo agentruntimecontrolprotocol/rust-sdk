@@ -6,27 +6,40 @@ Spec reference: [§8](../../../spec/docs/draft-arcp-1.1.md#8-job-events).
 
 ## Reserved event types
 
-The Rust SDK represents the standard ARCP event shapes as variants of
-`MessageType` (`arcp::messages`). Wire-level type strings — what appears in
-the envelope's `type` field — are:
+The Rust SDK represents the standard ARCP event shapes as top-level
+`MessageType` variants (`arcp::messages`). Each row below maps the SDK's
+wire-level `type` string to the spec's §8.2 event-kind name and notes any
+divergence.
 
-| Type | Purpose |
-| --- | --- |
-| `log` | Human-readable log line with level and attributes (`LogPayload`). |
-| `metric` | Numeric measurement (`MetricPayload`). |
-| `trace.span` | Span emitted for distributed tracing (`TraceSpanPayload`). |
-| `tool.invoke` | Agent requested a tool operation. |
-| `tool.result` | Tool operation result. |
-| `tool.error` | Structured tool failure. |
-| `job.started` | Job entered the running state. |
-| `job.progress` | Optional `percent`/`message` progress update (`JobProgressPayload`). |
-| `job.heartbeat` | Liveness signal from a long-running job (`JobHeartbeatPayload`). |
-| `job.result_chunk` | One fragment of a streamed final result (ARCP v1.1 §8.4). |
-| `job.completed` / `job.failed` / `job.cancelled` | Terminal outcomes. |
-| `artifact.ref` | Reference to a runtime-stored artifact. |
-| `agent.delegate` | Child job request (`AgentDelegatePayload`). |
-| `agent.handoff` | Hand work to another agent (`AgentHandoffPayload`). |
-| `event.emit` | Generic carrier for namespaced custom events. |
+> The spec's §8.2 event kinds (`progress`, `result_chunk`, `log`,
+> `thought`, `tool_call`, `tool_result`, `status`, `metric`,
+> `artifact_ref`, `delegate`) are defined as `kind` discriminators
+> inside a single `job.event` envelope. The Rust SDK currently models
+> them as separate top-level `MessageType` variants with `job.`-prefixed
+> wire types (e.g. `job.progress`). The wire shape mapping is below;
+> the two will be reconciled in a future major release.
+>
+> See the audit findings for the planned restructure; until then,
+> consumers should expect `job.<kind>` on the wire and not the bare
+> `<kind>` shape shown in the spec.
+
+| SDK wire `type` | Spec §8.2 `kind` | Purpose |
+| --- | --- | --- |
+| `log` | `log` | Human-readable log line with level and attributes (`LogPayload`). |
+| `metric` | `metric` | Numeric measurement (`MetricPayload`). |
+| `trace.span` | (SDK extension) | Span emitted for distributed tracing (`TraceSpanPayload`). |
+| `tool.invoke` | `tool_call` | Agent requested a tool operation. |
+| `tool.result` | `tool_result` | Tool operation result. |
+| `tool.error` | `tool_result` (error form) | Structured tool failure. |
+| `job.started` | `status` (`phase: "started"`) | Job entered the running state. |
+| `job.progress` | `progress` | Optional `percent`/`message` progress update (`JobProgressPayload`). |
+| `job.heartbeat` | (SDK extension; not in §8.2) | Liveness signal from a long-running job (`JobHeartbeatPayload`). |
+| `job.result_chunk` | `result_chunk` (ARCP v1.1 §8.4) | One fragment of a streamed final result. |
+| `job.completed` / `job.failed` / `job.cancelled` | Terminal `job.result` / `job.error` (§7.3) | Terminal outcomes. |
+| `artifact.ref` | `artifact_ref` | Reference to a runtime-stored artifact. |
+| `agent.delegate` | `delegate` | Child job request (`AgentDelegatePayload`). |
+| `agent.handoff` | (SDK extension) | Hand work to another agent (`AgentHandoffPayload`). |
+| `event.emit` | (extension carrier) | Generic carrier for namespaced custom events. |
 
 ## Progress
 

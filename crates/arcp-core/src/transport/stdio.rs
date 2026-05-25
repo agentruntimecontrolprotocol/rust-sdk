@@ -5,8 +5,8 @@
 //! testing, [`StdioTransport::from_streams`] accepts arbitrary
 //! [`AsyncRead`]/[`AsyncWrite`] (e.g. `tokio::io::duplex`).
 //!
-//! Sidecar binary frames (RFC §11.3) are not supported on stdio per spec —
-//! base64 in-envelope only.
+//! Sidecar binary frames are not supported on stdio (the v1.1 wire is
+//! JSON-only); inline base64 in-envelope only.
 
 #![allow(clippy::significant_drop_tightening)]
 

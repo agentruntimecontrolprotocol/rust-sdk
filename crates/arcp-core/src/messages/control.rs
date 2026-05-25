@@ -1,4 +1,14 @@
-//! Control plane messages (RFC §6.2 "Control" group).
+//! Control plane messages. Spans several ARCP v1.1 surfaces:
+//!
+//! - Cancellation — §7.4.
+//! - Acknowledgement / negative acknowledgement — §6.5.
+//! - Resume — §6.3 (the v1.1 form is `session.resume`; the [`ResumePayload`]
+//!   here is the SDK's older `resume` envelope carrying
+//!   `after_message_id`/`checkpoint_id` and is retained for compatibility).
+//! - Backpressure — implementation-defined under §6.5's slow-consumer
+//!   guidance.
+//! - `interrupt` — SDK extension; v1.1 explicitly defers pause/unpause
+//!   surfaces.
 
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +37,7 @@ pub struct NackPayload {
     pub details: Option<serde_json::Value>,
 }
 
-/// Cancellation target discriminator (RFC §10.4).
+/// Cancellation target discriminator (ARCP v1.1 §7.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CancelTargetKind {
@@ -39,7 +49,7 @@ pub enum CancelTargetKind {
     Session,
 }
 
-/// Payload for `cancel` (RFC §10.4).
+/// Payload for `cancel` (ARCP v1.1 §7.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancelPayload {
     /// Kind of target.
@@ -71,7 +81,8 @@ pub struct CancelRefusedPayload {
     pub reason: String,
 }
 
-/// Payload for `interrupt` (RFC §10.5).
+/// Payload for `interrupt`. SDK extension; ARCP v1.1 §1 explicitly defers
+/// pause/unpause from the v1.1 surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterruptPayload {
     /// Kind of target.
@@ -82,7 +93,12 @@ pub struct InterruptPayload {
     pub prompt: String,
 }
 
-/// Payload for `resume` (RFC §19).
+/// Payload for the SDK's legacy `resume` envelope.
+///
+/// The v1.1 resume contract is `session.resume` (ARCP v1.1 §6.3) carrying
+/// `last_event_seq` and `resume_token`; this older shape
+/// (`after_message_id` / `checkpoint_id`) is retained for backward
+/// compatibility with v1.0 peers.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResumePayload {
     /// Replay starting strictly after this message id.
@@ -101,7 +117,8 @@ const fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Payload for `backpressure` (RFC §11.2).
+/// Payload for `backpressure`. Implementation-defined under ARCP v1.1
+/// §6.5's slow-consumer guidance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackpressurePayload {
     /// Desired chunk-rate in chunks per second (PLAN.md §A4.8 choice).

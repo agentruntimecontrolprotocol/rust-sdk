@@ -1,9 +1,15 @@
-//! Authentication scheme adapters (RFC §8.2).
+//! Authentication scheme adapters.
 //!
-//! Each [`Authenticator`] implementation validates one auth scheme. The
-//! runtime composes these into an [`AuthRegistry`]; on `session.open` the
+//! ARCP v1.1 §6.1 collapses authentication to a single bearer token carried
+//! in `session.hello.payload.auth.token` (the SDK serializes this envelope as
+//! `session.open`). The [`Authenticator`] trait is an SDK extension that
+//! lets a runtime support additional schemes (`signed_jwt`, `none`, etc.) —
+//! including a legacy challenge / response flow not described by v1.1 — by
+//! composing implementations into an [`AuthRegistry`]; on `session.open` the
 //! runtime dispatches by [`AuthScheme`] and either accepts directly or
 //! issues a [`session.challenge`][crate::messages::SessionChallengePayload].
+//! Bearer is the only scheme normative under v1.1; the others are SDK
+//! extensions outside the spec surface.
 
 use std::collections::HashMap;
 

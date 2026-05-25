@@ -1,4 +1,4 @@
-//! Transport abstraction (RFC §22).
+//! Transport abstraction (ARCP v1.1 §4).
 //!
 //! Each transport delivers and receives [`Envelope`]-shaped messages. The
 //! trait is async, object-safe via `#[async_trait]`, and intentionally

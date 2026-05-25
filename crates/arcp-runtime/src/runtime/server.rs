@@ -1,4 +1,5 @@
-//! ARCP runtime — the server side that drives the handshake (RFC §8.1)
+//! ARCP runtime — the server side that drives the ARCP v1.1 §6.2
+//! hello/welcome handshake (serialized as `session.open` / `session.accepted`)
 //! and dispatches subsequent envelopes.
 
 use std::collections::HashSet;
@@ -213,7 +214,7 @@ struct RuntimeInner {
     credential_provisioner: Option<Arc<dyn CredentialProvisioner>>,
     /// Runtime ledger of outstanding credential ids.
     credential_ledger: CredentialLedger,
-    /// Logical idempotency index for `tool.invoke` (ARCP v1.1 §6.4).
+    /// Logical idempotency index for `tool.invoke` (ARCP v1.1 §7.2).
     /// Keyed by `(principal-or-session, idempotency_key)`; resolves a
     /// repeat command intent to the original `JobAccepted` payload so
     /// retries return the same `job_id` instead of starting a duplicate
@@ -363,8 +364,8 @@ impl ARCPRuntime {
                 }
                 // Publish outbound envelopes too so subscribers see
                 // job.* / tool.* / stream.* events that originate on the
-                // server side (RFC §13). Skip subscribe.event itself so
-                // the wrapper isn't re-broadcast, which would cause an
+                // server side (ARCP v1.1 §7.6). Skip subscribe.event itself
+                // so the wrapper isn't re-broadcast, which would cause an
                 // echo storm whenever a filter matches subscribe.event.
                 if !matches!(env.payload, MessageType::SubscribeEvent(_)) {
                     let publish_env = redact_for_subscribers(&env);
@@ -596,9 +597,12 @@ impl ARCPRuntime {
                     );
                 }
                 _ => {
+                    // Unknown post-handshake envelope. Logging at debug
+                    // for now; a future revision should NACK with
+                    // INVALID_REQUEST so the peer sees the rejection.
                     tracing::debug!(
                         type_name = envelope.payload.type_name(),
-                        "dispatch arm not yet implemented",
+                        "no dispatch arm for this envelope type",
                     );
                 }
             }
@@ -1518,9 +1522,9 @@ fn cancel_principal_matches(
 /// Intersect two boolean capability slots.
 ///
 /// Returns `None` only when neither side advertised the capability — in
-/// that case the field is elided on the wire, matching RFC §7's "absent =
-/// false" semantics. When at least one side advertised, the result is
-/// `Some(both_set)`.
+/// that case the field is elided on the wire, matching the ARCP v1.1 §6.2
+/// "absent = not negotiated" intersection rule. When at least one side
+/// advertised, the result is `Some(both_set)`.
 const fn intersect_bool(a: Option<bool>, b: Option<bool>) -> Option<bool> {
     match (a, b) {
         (Some(true), Some(true)) => Some(true),

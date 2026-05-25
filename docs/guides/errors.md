@@ -1,7 +1,7 @@
 # Errors (§12)
 
 The SDK maps ARCP error codes to `ARCPError` and `ErrorCode`. The full
-taxonomy lives in [`src/error.rs`](../../src/error.rs); the codes below
+taxonomy lives in [`crates/arcp-core/src/error.rs`](../../crates/arcp-core/src/error.rs); the codes below
 mirror the `ErrorCode` enum verbatim.
 
 Spec reference: [§12](../../../spec/docs/draft-arcp-1.1.md#12-error-taxonomy).
@@ -54,4 +54,4 @@ events so the agent can recover without failing the entire job.
 
 ## Tests
 
-Error-code serialization and retryability are covered in [`src/error.rs`](../../src/error.rs).
+Error-code serialization and retryability are covered in [`crates/arcp-core/src/error.rs`](../../crates/arcp-core/src/error.rs).

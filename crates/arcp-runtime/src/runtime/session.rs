@@ -3,12 +3,18 @@
 use arcp_core::ids::SessionId;
 use arcp_core::messages::Capabilities;
 
-/// Phase of the four-step handshake (RFC §8.1).
+/// Phase of the SDK handshake.
+///
+/// ARCP v1.1 §6.2 prescribes a two-message hello/welcome exchange
+/// (`session.open` → `session.accepted` on the wire); the optional
+/// challenge / authenticate pair between them is an SDK extension. See
+/// ARCP v1.1 §6.1 for the v1.1 bearer-only auth surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HandshakePhase {
     /// `session.open` received; waiting for credential validation outcome.
     Opened,
-    /// `session.challenge` sent; awaiting `session.authenticate`.
+    /// `session.challenge` sent; awaiting `session.authenticate` (SDK
+    /// extension; not part of v1.1).
     Challenged,
     /// `session.accepted` sent; protocol traffic permitted.
     Accepted,

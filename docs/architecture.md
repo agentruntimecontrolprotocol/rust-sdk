@@ -5,22 +5,28 @@
   <img alt="ARCP Rust SDK architecture" src="diagrams/architecture-light.svg">
 </picture>
 
-The Rust SDK ships one crate, `arcp`, with both a library target and the
-`arcp` CLI binary. It is not a Cargo workspace, so there is no `docs/crates/`
-or module catalog to mirror.
+The Rust SDK is a Cargo workspace. The umbrella `arcp` crate re-exports the
+protocol core (`arcp-core`), the typed client (`arcp-client`), and the
+server-side runtime (`arcp-runtime`); the `arcp` CLI binary ships from
+`arcp-runtime`. Reservation stubs (`arcp-tower`, `arcp-axum`,
+`arcp-actix-web`, `arcp-otel`) are published at `0.1.0-alpha.0` for the
+forthcoming middleware integrations and currently re-export `arcp-core` only.
 
-## Layers
+## Workspace layout
 
 ```
-arcp
-├── client      typed client session API
-├── runtime     server-side runtime, tool dispatch, jobs, leases
-├── messages    ARCP v1.1 payload structs and enums
-├── envelope    wire envelope and metadata
-├── transport   memory, WebSocket, stdio
-├── auth        bearer, signed JWT, anonymous
-├── store       SQLite event and credential ledgers
-└── extensions  core vs. vendor-extension classification
+arcp/                  umbrella — re-exports core + client + runtime
+└── crates/
+    ├── arcp-core/     wire types, IDs, envelope, transports, error taxonomy,
+    │                  Authenticator trait, extensions registry
+    ├── arcp-client/   ARCPClient, type-state Session, JobHandle
+    ├── arcp-runtime/  ARCPRuntime, tool dispatch, JobRegistry, EventLog
+    │                  (SQLite), SubscriptionManager, CredentialLedger, CLI
+    ├── arcp/          umbrella — re-exports the three above
+    ├── arcp-tower/    reservation stub (Tower middleware, deferred)
+    ├── arcp-axum/     reservation stub (Axum middleware, deferred)
+    ├── arcp-actix-web/reservation stub (actix-web middleware, deferred)
+    └── arcp-otel/     reservation stub (OpenTelemetry middleware, deferred)
 ```
 
 Rustdoc remains the symbol-level reference at <https://docs.rs/arcp>. These
@@ -72,23 +78,34 @@ See [transports.md](./transports.md).
 
 ## Feature flags
 
+Features are declared on the umbrella `arcp` crate. Each feature gates a
+re-export of one workspace member or one transport in `arcp-core`.
+
 | Feature | Default | Effect |
 | --- | --- | --- |
-| `transport-ws` | yes | Enables `tokio-tungstenite` WebSocket transport and `arcp serve`. |
-| `transport-stdio` | yes | Enables newline-delimited JSON stdio transport. |
+| `client` | yes | Re-exports `arcp-client` (`ARCPClient`, `Session`). |
+| `runtime` | yes | Re-exports `arcp-runtime` (`ARCPRuntime`, event log, CLI). |
+| `transport-ws` | yes | Enables the `tokio-tungstenite` WebSocket transport in `arcp-core`. |
+| `transport-stdio` | yes | Enables the newline-delimited JSON stdio transport in `arcp-core`. |
+
+Disable defaults to keep only the typed protocol core (`arcp-core`) and the
+in-memory transport.
 
 ## Persistence
 
-The event log uses `rusqlite` with bundled SQLite. The runtime can use an
-in-memory database for tests or a file-backed database for restart-tolerant
-resume and audit trails.
+The SQLite event log ships in `arcp-runtime` (via `rusqlite` with bundled
+SQLite) and is reached through the umbrella crate's `runtime` feature.
+Consumers who pull only `arcp-client` do not get persistence. The runtime
+can be configured with an in-memory database for tests or a file-backed
+database for restart-tolerant resume and audit trails.
 
 ## Where to read code
 
-- Library entry point: [`src/lib.rs`](../src/lib.rs)
-- Client API: [`src/client/api.rs`](../src/client/api.rs)
-- Runtime: [`src/runtime/server.rs`](../src/runtime/server.rs)
-- Tool context: [`src/runtime/context.rs`](../src/runtime/context.rs)
-- Message payloads: [`src/messages/`](../src/messages/)
-- Transports: [`src/transport/`](../src/transport/)
-- Event log: [`src/store/eventlog.rs`](../src/store/eventlog.rs)
+- Umbrella entry point: [`crates/arcp/src/lib.rs`](../crates/arcp/src/lib.rs)
+- Client API: [`crates/arcp-client/src/api.rs`](../crates/arcp-client/src/api.rs)
+- Runtime: [`crates/arcp-runtime/src/runtime/server.rs`](../crates/arcp-runtime/src/runtime/server.rs)
+- Tool context: [`crates/arcp-runtime/src/runtime/context.rs`](../crates/arcp-runtime/src/runtime/context.rs)
+- Message payloads: [`crates/arcp-core/src/messages/`](../crates/arcp-core/src/messages/)
+- Transports: [`crates/arcp-core/src/transport/`](../crates/arcp-core/src/transport/)
+- Event log: [`crates/arcp-runtime/src/store/eventlog.rs`](../crates/arcp-runtime/src/store/eventlog.rs)
+- CLI: [`crates/arcp-runtime/src/bin/arcp.rs`](../crates/arcp-runtime/src/bin/arcp.rs)
