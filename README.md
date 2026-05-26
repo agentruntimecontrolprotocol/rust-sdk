@@ -369,15 +369,15 @@ capability fields:
 | `durable_jobs` | Supported |
 | `checkpoints` | Not implemented (deferred) |
 | `binary_streams` | Not implemented (deferred) |
-| `agent_handoff` | Supported |
+| `agent_handoff` | Not implemented (deferred) |
 | `model_use` | Supported |
 | `provisioned_credentials` | Supported |
 | `artifacts` | Supported |
 | `subscriptions` | Supported |
 | `scheduled_jobs` | Not implemented (deferred) |
-| `interrupt` | Supported |
+| `interrupt` | Not implemented (deferred) |
 | `anonymous` | Supported |
-| `heartbeat_recovery` | Supported (`"fail"` / `"block"`) |
+| `heartbeat_recovery` | Advertised; recovery modes not implemented |
 | `binary_encoding` | Advertised; payloads remain JSON |
 | `extensions` | Supported |
 | `artifact_retention` | Supported |
