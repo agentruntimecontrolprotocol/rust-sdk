@@ -4,3 +4,6 @@
 *.swp
 *.swo
 .env
+
+# Generated API docs (scripts/gen-api-docs.py)
+/docs/api/
