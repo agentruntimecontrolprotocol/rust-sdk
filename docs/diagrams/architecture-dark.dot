@@ -1,64 +1,118 @@
-// ARCP Rust SDK crate architecture (dark)
-digraph RustSdkArchitecture {
-  rankdir=TB; bgcolor="transparent"; compound=true; fontname="TT Commons Pro Trial";
-  splines=spline; nodesep=0.32; ranksep=0.55; pad="0.35,0.25";
+// ARCP Rust SDK — crate architecture (dark)
+// A Cargo workspace of 8 published crates. Nodes are CRATES; submodules sit
+// inside their owning crate. Solid arrows are real crate dependencies (every
+// crate -> arcp-core); the dashed amber link is runtime message flow, NOT a
+// code dependency. Inkwell dark palette (agentruntimecontrolprotocol.io):
+//   page #110f0c · paper #1b1813 · chip #1a1813 · line #2b2820
+//   ink #ece6da · ink-soft #c9c2b4 · muted #8c8576 · faint #5f5949
+//   accent (vermilion) #f0612f · accent-dim (amber) #a8794d · font IBM Plex Mono
+digraph ARCPRustSdk {
+  rankdir=TB; bgcolor="transparent"; compound=true; fontname="IBM Plex Mono";
+  splines=spline; nodesep=0.34; ranksep=0.52; pad="0.42,0.30";
 
-  node [shape=box, style="rounded,filled", fillcolor="#334155", color="#475569",
-        fontname="TT Commons Pro Trial", fontsize=11, fontcolor="#F1F5F9",
-        margin="0.22,0.11", penwidth=1.0];
-  edge [fontname="TT Commons Pro Trial", fontsize=9, fontcolor="#94A3B8", color="#64748B",
-        penwidth=1.1, arrowsize=0.75, arrowhead=vee];
+  node [shape=box, style="rounded,filled", fillcolor="#1a1813", color="#2b2820",
+        fontname="IBM Plex Mono", fontsize=11, fontcolor="#c9c2b4",
+        margin="0.20,0.12", penwidth=1.0];
+  edge [fontname="IBM Plex Mono", fontsize=9, fontcolor="#8c8576", color="#5f5949",
+        penwidth=1.0, arrowsize=0.7, arrowhead=vee];
 
-  Client [
-    label=<<FONT POINT-SIZE="12"><B>arcp::client</B></FONT><BR/><FONT POINT-SIZE="9" COLOR="#CBD5E1">ARCPClient · Session&lt;S&gt;</FONT>>,
-    fillcolor="#3B82F6", color="#2563EB", fontcolor="white", penwidth=1.4
-  ];
+  subgraph cluster_envelope {
+    style="rounded,filled"; fillcolor="#1b1813"; color="#c9c2b4"; penwidth=1.1;
+    margin=24; labeljust=l;
+    label=<<TABLE BORDER="0" CELLBORDER="0" CELLPADDING="0" CELLSPACING="0">
+      <TR><TD COLSPAN="2" HEIGHT="7"></TD></TR>
+      <TR><TD WIDTH="6"></TD>
+          <TD><FONT POINT-SIZE="10.5" COLOR="#f0612f">ARCP &#183; RUST SDK &#183; CARGO WORKSPACE</FONT></TD></TR>
+    </TABLE>>;
 
-  Runtime [
-    label=<<FONT POINT-SIZE="12"><B>arcp::runtime</B></FONT><BR/><FONT POINT-SIZE="9" COLOR="white">server · jobs · leases · artifacts</FONT>>,
-    fillcolor="#F59E0B", color="#D97706", fontcolor="white", penwidth=1.4
-  ];
+    // ---------------- umbrella facade (vermilion) ----------------
+    Umbrella [
+      label=<<FONT POINT-SIZE="12.5" COLOR="#f0612f">arcp</FONT><BR/><FONT POINT-SIZE="6"> </FONT><BR/><FONT POINT-SIZE="8.5" COLOR="#8c8576">umbrella facade &#183; pub-use re-exports, no logic<BR/><FONT COLOR="#5f5949">paths: arcp::{messages, envelope, transport, auth, client*, runtime*, store*}</FONT></FONT>>,
+      color="#f0612f", penwidth=1.4
+    ];
 
-  Messages [
-    label=<<FONT POINT-SIZE="11"><B>arcp::messages</B></FONT><BR/><FONT POINT-SIZE="9" COLOR="#94A3B8">tagged-enum MessageType</FONT>>
-  ];
+    // ---------------- peer layer: client (vermilion-ink) | runtime (amber) ----------------
+    Client [
+      label=<<FONT POINT-SIZE="11.5" COLOR="#ece6da">arcp-client</FONT><BR/><FONT POINT-SIZE="6"> </FONT><BR/><FONT POINT-SIZE="8.5" COLOR="#8c8576">ARCPClient &#183; Session&lt;Unauthenticated&#8594;Authenticated&gt;<BR/>JobHandle &#183; SubscriptionHandle</FONT>>,
+      color="#7a7264", penwidth=1.2
+    ];
+    Runtime [
+      label=<<FONT POINT-SIZE="11.5" COLOR="#c79968">arcp-runtime</FONT><BR/><FONT POINT-SIZE="6"> </FONT><BR/><FONT POINT-SIZE="8.5" COLOR="#8c8576">ARCPRuntime / RuntimeBuilder<BR/>ToolRegistry &#183; JobRegistry &#183; SubscriptionManager<BR/>CredentialLedger &#183; ArtifactStore &#183; arcp CLI (serve/tail)<BR/>auth validators: Bearer &#183; SignedJwt&#8224; &#183; None&#8224;</FONT>>,
+      color="#a8794d", penwidth=1.4
+    ];
 
-  Envelope [
-    label=<<FONT POINT-SIZE="11"><B>arcp::envelope</B></FONT><BR/><FONT POINT-SIZE="9" COLOR="#94A3B8">Envelope · ids · trace · priority</FONT>>
-  ];
+    EventLog [
+      label=<<FONT POINT-SIZE="10" COLOR="#ece6da">EventLog</FONT><BR/><FONT POINT-SIZE="7.5" COLOR="#5f5949">rusqlite &#183; in-memory by default<BR/>events table &#8594; resume / backfill</FONT>>,
+      shape=cylinder, fillcolor="#161310", color="#2b2820"
+    ];
 
-  Auth [
-    label=<<FONT POINT-SIZE="11"><B>arcp::auth</B></FONT><BR/><FONT POINT-SIZE="9" COLOR="#94A3B8">bearer · jwt · none</FONT>>
-  ];
+    // ---------------- foundation: arcp-core (everything depends on this) ----------------
+    subgraph cluster_core {
+      style="rounded,filled"; fillcolor="#161310"; color="#7a7264"; penwidth=1.3;
+      margin=14; labeljust=l;
+      label=<<TABLE BORDER="0" CELLBORDER="0" CELLPADDING="0" CELLSPACING="0">
+        <TR><TD COLSPAN="2" HEIGHT="6"></TD></TR>
+        <TR><TD WIDTH="5"></TD>
+            <TD><FONT POINT-SIZE="10.5" COLOR="#ece6da">arcp-core</FONT><FONT POINT-SIZE="8.5" COLOR="#8c8576">  &#183; protocol foundation &#183; ARCP v1.1 &#183; dependency-light, storage-free</FONT></TD></TR>
+      </TABLE>>;
 
-  subgraph cluster_transport {
-    label=<<TABLE BORDER="0" CELLBORDER="0" CELLPADDING="0" CELLSPACING="0"><TR><TD COLSPAN="3" HEIGHT="8"></TD></TR><TR><TD WIDTH="8"></TD><TD><FONT POINT-SIZE="12"><B>arcp::transport</B></FONT></TD><TD WIDTH="8"></TD></TR></TABLE>>;
-    style="rounded,filled";
-    fillcolor="#0F172A"; color="#334155";
-    fontname="TT Commons Pro Trial"; fontcolor="#94A3B8";
-    margin=14; labeljust=l; penwidth=1.0;
+      Envelope  [label=<<FONT POINT-SIZE="9.5" COLOR="#c9c2b4">envelope</FONT><BR/><FONT POINT-SIZE="7.5" COLOR="#5f5949">Envelope &#183; RawEnvelope &#183; Priority</FONT>>];
+      Messages  [label=<<FONT POINT-SIZE="9.5" COLOR="#c9c2b4">messages</FONT><BR/><FONT POINT-SIZE="7.5" COLOR="#5f5949">MessageType (62) &#183; Capabilities</FONT>>];
+      Ids       [label=<<FONT POINT-SIZE="9.5" COLOR="#c9c2b4">ids</FONT><BR/><FONT POINT-SIZE="7.5" COLOR="#5f5949">SessionId &#183; JobId &#183; TraceId &#8230;</FONT>>];
+      Errors    [label=<<FONT POINT-SIZE="9.5" COLOR="#c9c2b4">error</FONT><BR/><FONT POINT-SIZE="7.5" COLOR="#5f5949">ARCPError &#183; ErrorCode</FONT>>];
+      Ext       [label=<<FONT POINT-SIZE="9.5" COLOR="#c9c2b4">extensions</FONT><BR/><FONT POINT-SIZE="7.5" COLOR="#5f5949">ExtensionRegistry</FONT>>];
+      AuthTrait [label=<<FONT POINT-SIZE="9.5" COLOR="#c9c2b4">auth</FONT><BR/><FONT POINT-SIZE="7.5" COLOR="#5f5949">Authenticator trait &#183; AuthRegistry</FONT>>];
 
-    Ws     [label="websocket"];
-    Stdio  [label="stdio"];
-    Memory [label="memory"];
+      subgraph cluster_transport {
+        style="rounded,dashed"; color="#a8794d"; penwidth=1.0; margin=10; labeljust=l;
+        label=<<TABLE BORDER="0" CELLBORDER="0" CELLPADDING="0" CELLSPACING="0">
+          <TR><TD COLSPAN="2" HEIGHT="4"></TD></TR>
+          <TR><TD WIDTH="4"></TD><TD><FONT POINT-SIZE="8.5" COLOR="#a8794d">transport &#183; Transport trait</FONT></TD></TR>
+        </TABLE>>;
+        Memory [label=<<FONT POINT-SIZE="9" COLOR="#c9c2b4">in-memory</FONT>>];
+        Stdio  [label=<<FONT POINT-SIZE="9" COLOR="#c9c2b4">stdio *</FONT>>];
+        Ws     [label=<<FONT POINT-SIZE="9" COLOR="#c9c2b4">websocket *</FONT>>];
+        Memory -> Stdio -> Ws [style=invis];
+        { rank=same; Memory; Stdio; Ws; }
+      }
+      { rank=same; Envelope; Messages; Ids; Errors; Ext; AuthTrait; }
+      Messages -> Memory [style=invis];
+    }
 
-    Ws -> Stdio -> Memory [style=invis];
-    { rank=same; Ws; Stdio; Memory; }
+    // ---------------- reservation stubs (re-export arcp-core only) ----------------
+    subgraph cluster_stubs {
+      style="rounded,dashed"; color="#5f5949"; penwidth=1.0; margin=12; labeljust=l;
+      label=<<TABLE BORDER="0" CELLBORDER="0" CELLPADDING="0" CELLSPACING="0">
+        <TR><TD COLSPAN="2" HEIGHT="5"></TD></TR>
+        <TR><TD WIDTH="14"></TD><TD><FONT POINT-SIZE="9" COLOR="#8c8576">&#160;reservation stubs &#183; 0.1.0-alpha &#183; re-export arcp-core only (integrations deferred)</FONT></TD></TR>
+      </TABLE>>;
+      Tower  [label=<<FONT POINT-SIZE="9" COLOR="#8c8576">arcp-tower</FONT>>, fontcolor="#8c8576"];
+      Axum   [label=<<FONT POINT-SIZE="9" COLOR="#8c8576">arcp-axum</FONT>>, fontcolor="#8c8576"];
+      Actix  [label=<<FONT POINT-SIZE="9" COLOR="#8c8576">arcp-actix-web</FONT>>, fontcolor="#8c8576"];
+      Otel   [label=<<FONT POINT-SIZE="9" COLOR="#8c8576">arcp-otel</FONT>>, fontcolor="#8c8576"];
+      Tower -> Axum -> Actix -> Otel [style=invis];
+      { rank=same; Tower; Axum; Actix; Otel; }
+    }
+
+    // ---------------- real crate-dependency edges (everything -> arcp-core) ----------------
+    Umbrella -> Client  [label="feature: client", color="#7a7264", fontcolor="#a39c8d"];
+    Umbrella -> Runtime [label="feature: runtime", color="#7a7264", fontcolor="#a39c8d"];
+    Client  -> Messages [lhead=cluster_core, color="#7a7264", penwidth=1.2];
+    Runtime -> Messages [lhead=cluster_core, color="#7a7264", penwidth=1.2];
+    Umbrella -> Ids     [lhead=cluster_core, color="#3c372f", style=dashed, label="always", fontcolor="#5f5949"];
+    Runtime -> EventLog [color="#3c372f"];
+    Tower -> AuthTrait  [ltail=cluster_stubs, lhead=cluster_core, color="#3c372f", style=dashed, label="re-export", fontcolor="#5f5949", constraint=false];
+    Client -> Tower [style=invis]; // rank the stubs below the facade/peer row
+    // runtime validators implement the core Authenticator trait
+    Runtime -> AuthTrait [style=dashed, color="#5f5949", label="implements", fontcolor="#5f5949", constraint=false];
+
+    // ---------------- wire: ARCP message flow (NOT a code dependency) ----------------
+    Client -> Runtime [dir=both, style=dashed, constraint=false,
+      label="ARCP v1.1 envelopes\nover a core Transport", color="#a8794d", fontcolor="#a8794d"];
+
+    // ---------------- footnotes ----------------
+    Legend [shape=plaintext, style="", fillcolor="transparent",
+      label=<<FONT POINT-SIZE="7.5" COLOR="#5f5949">* feature-gated (transport-ws / transport-stdio) &#183; in-memory transport always compiled &#160;&#160;&#8226;&#160;&#160; &#8224; SDK extension (only bearer is ARCP v1.1-normative)</FONT>>];
   }
-
-  Store [
-    label=<<FONT POINT-SIZE="11"><B>arcp::store</B></FONT><BR/><FONT POINT-SIZE="8" COLOR="#64748B">rusqlite · idempotency · replay</FONT>>,
-    shape=cylinder, fillcolor="#1E293B"
-  ];
-
-  edge [color="#94A3B8", penwidth=1.2];
-  Client   -> Runtime  [dir=both, label="invoke / events"];
-  Client   -> Messages;
-  Runtime  -> Messages;
-  Messages -> Envelope [label="wrapped in"];
-  Envelope -> Ws       [lhead=cluster_transport];
-
-  edge [color="#475569", penwidth=1.0];
-  Runtime -> Auth;
-  Runtime -> Store;
+  Memory -> Legend [style=invis];
 }
