@@ -169,6 +169,18 @@ pub struct SessionClosePayload {
     pub reason: Option<String>,
 }
 
+/// Payload for `session.closed` (ARCP v1.1 §6.7).
+///
+/// The runtime's acknowledgement of a graceful `session.close`. In-flight
+/// jobs are not affected by the close; they keep running and remain
+/// resumable within the resume window.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionClosedPayload {
+    /// Optional human-readable reason echoed back to the client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Payload for `session.ping` (ARCP v1.1 §6.4).
 ///
 /// Either peer MAY emit `session.ping` if idle and expect a prompt

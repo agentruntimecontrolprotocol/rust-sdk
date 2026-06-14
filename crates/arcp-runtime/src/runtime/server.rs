@@ -355,6 +355,14 @@ impl ARCPRuntime {
         self.inner.jobs.len()
     }
 
+    /// Snapshot a job's public-facing state, if it is still registered.
+    /// Exposes registry visibility for inspection and tests (e.g. asserting
+    /// a job survives `session.close` per §6.7).
+    #[must_use]
+    pub fn job_snapshot(&self, job_id: &JobId) -> Option<super::job::JobSnapshot> {
+        self.inner.jobs.snapshot(job_id)
+    }
+
     /// Number of live idempotency records (ARCP v1.1 §7.2). Bounded by the
     /// terminal-retention sweep (#85).
     #[must_use]
@@ -734,14 +742,20 @@ impl ARCPRuntime {
         };
 
         // Tear down: stop per-connection subscription forwarders and
-        // drop the out_tx so the writer drains. Per ARCP v1.1 durable
-        // semantics (§10.1), in-flight jobs survive a transport drop —
-        // they are only cancelled when the client sends `session.close`.
+        // drop the out_tx so the writer drains. Per ARCP v1.1 §6.7 and the
+        // durable-job semantics of §10.1, a graceful `session.close`
+        // terminates the SESSION only — in-flight jobs are NOT affected:
+        // they keep running in the shared JobRegistry and remain resumable
+        // within the resume window. We acknowledge the close with
+        // `session.closed` and tear down only connection-local state; jobs
+        // are cancelled solely by an explicit authorized `job.cancel`.
         if explicit_close {
             if let Some(s) = state.as_ref() {
-                for snap in jobs.list_for_session(&s.session_id, None) {
-                    let _ = jobs.cancel(&snap.job_id);
-                }
+                let mut closed = Envelope::new(MessageType::SessionClosed(
+                    arcp_core::messages::SessionClosedPayload { reason: None },
+                ));
+                closed.session_id = Some(s.session_id.clone());
+                let _ = out_tx.send(closed).await;
             }
         }
         if let Some(s) = state.as_ref() {

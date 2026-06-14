@@ -51,9 +51,10 @@ pub use permissions::{
 pub use session::{
     AuthScheme, ClientIdentity, Credentials, JobListEntry, RuntimeIdentity, SessionAcceptedPayload,
     SessionAckPayload, SessionAuthenticatePayload, SessionChallengePayload, SessionClosePayload,
-    SessionEvictedPayload, SessionJobsPayload, SessionLease, SessionListJobsFilter,
-    SessionListJobsPayload, SessionOpenPayload, SessionPingPayload, SessionPongPayload,
-    SessionRefreshPayload, SessionRejectedPayload, SessionUnauthenticatedPayload,
+    SessionClosedPayload, SessionEvictedPayload, SessionJobsPayload, SessionLease,
+    SessionListJobsFilter, SessionListJobsPayload, SessionOpenPayload, SessionPingPayload,
+    SessionPongPayload, SessionRefreshPayload, SessionRejectedPayload,
+    SessionUnauthenticatedPayload,
 };
 pub use streaming::{
     StreamChunkPayload, StreamClosePayload, StreamErrorPayload, StreamKind, StreamOpenPayload,
@@ -295,6 +296,9 @@ pub enum MessageType {
     /// `session.close`
     #[serde(rename = "session.close")]
     SessionClose(SessionClosePayload),
+    /// `session.closed` — runtime ack of a graceful close (ARCP v1.1 §6.7).
+    #[serde(rename = "session.closed")]
+    SessionClosed(SessionClosedPayload),
     /// `session.ping` (ARCP v1.1 §6.4) — session-scoped heartbeat.
     ///
     /// Canonical heartbeat per ARCP v1.1; the generic `Ping`/`Pong`
@@ -494,6 +498,7 @@ impl MessageType {
             Self::SessionRefresh(_) => "session.refresh",
             Self::SessionEvicted(_) => "session.evicted",
             Self::SessionClose(_) => "session.close",
+            Self::SessionClosed(_) => "session.closed",
             Self::SessionPing(_) => "session.ping",
             Self::SessionPong(_) => "session.pong",
             Self::SessionAck(_) => "session.ack",
@@ -584,6 +589,7 @@ impl MessageType {
                 | Self::SessionRefresh(_)
                 | Self::SessionEvicted(_)
                 | Self::SessionClose(_)
+                | Self::SessionClosed(_)
                 | Self::SessionPing(_)
                 | Self::SessionPong(_)
                 | Self::SessionAck(_)

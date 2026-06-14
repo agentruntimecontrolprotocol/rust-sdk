@@ -193,6 +193,7 @@ fn core_type_set() -> &'static BTreeSet<&'static str> {
             "session.refresh",
             "session.evicted",
             "session.close",
+            "session.closed",
             // control
             "ping",
             "pong",
