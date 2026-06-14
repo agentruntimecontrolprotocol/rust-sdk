@@ -738,7 +738,9 @@ async fn issue_61_idempotency_key_with_conflicting_payload_is_refused() {
             response.payload
         );
     };
-    assert_eq!(failed.code, arcp::error::ErrorCode::FailedPrecondition);
+    // ARCP v1.1 §7.2 / §12: a reused key with conflicting parameters
+    // returns DUPLICATE_KEY (was FAILED_PRECONDITION before #83).
+    assert_eq!(failed.code, arcp::error::ErrorCode::DuplicateKey);
 }
 
 #[test]

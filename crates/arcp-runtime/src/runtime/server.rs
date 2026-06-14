@@ -2,9 +2,10 @@
 //! hello/welcome handshake (serialized as `session.open` / `session.accepted`)
 //! and dispatches subsequent envelopes.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use dashmap::DashMap;
 use tokio::sync::{mpsc, Notify};
@@ -49,6 +50,7 @@ pub struct RuntimeBuilder {
     session_lease_seconds: Option<u64>,
     ack_window: Option<u64>,
     credential_provisioner: Option<Arc<dyn CredentialProvisioner>>,
+    terminal_retention: Duration,
 }
 
 impl Default for RuntimeBuilder {
@@ -85,6 +87,10 @@ impl RuntimeBuilder {
             session_lease_seconds: Some(3600),
             ack_window: None,
             credential_provisioner: None,
+            // Default terminal-job retention window (#72). Terminal jobs
+            // remain visible to `session.list_jobs` / `job.subscribe` for
+            // this long after completion, then are swept to bound memory.
+            terminal_retention: Duration::from_secs(300),
         }
     }
 
@@ -139,6 +145,20 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Set how long terminal jobs (and their idempotency records) are
+    /// retained before the maintenance sweep evicts them (#72, #85).
+    ///
+    /// Terminal jobs stay visible to `session.list_jobs` and
+    /// `job.subscribe` for this window; afterward they are dropped from the
+    /// [`JobRegistry`] and the idempotency index so a long-running runtime
+    /// does not accumulate state without bound. `Duration::ZERO` evicts
+    /// terminal jobs on the next sweep. Defaults to 300 seconds.
+    #[must_use]
+    pub const fn with_terminal_retention(mut self, retention: Duration) -> Self {
+        self.terminal_retention = retention;
+        self
+    }
+
     /// Register a provisioner for ARCP v1.1 lease-bound credentials.
     #[must_use]
     pub fn with_credential_provisioner(
@@ -167,26 +187,62 @@ impl RuntimeBuilder {
             });
         }
         let event_log = EventLog::in_memory().await?;
-        Ok(ARCPRuntime {
-            inner: Arc::new(RuntimeInner {
-                auth: self.auth,
-                tools: self.tools,
-                advertised_capabilities: self.advertised_capabilities,
-                runtime_identity: self.runtime_identity,
-                session_lease_seconds: self.session_lease_seconds,
-                ack_window: self.ack_window,
-                extension_registry: ExtensionRegistry::new(),
-                event_log,
-                artifacts: ArtifactStore::new(),
-                subscriptions: SubscriptionManager::new(),
-                jobs: JobRegistry::new(),
-                session_principals: DashMap::new(),
-                credential_provisioner: self.credential_provisioner,
-                credential_ledger: CredentialLedger::new(),
-                idempotency_index: DashMap::new(),
-            }),
-        })
+        let inner = Arc::new(RuntimeInner {
+            auth: self.auth,
+            tools: self.tools,
+            advertised_capabilities: self.advertised_capabilities,
+            runtime_identity: self.runtime_identity,
+            session_lease_seconds: self.session_lease_seconds,
+            ack_window: self.ack_window,
+            extension_registry: ExtensionRegistry::new(),
+            event_log,
+            artifacts: ArtifactStore::new(),
+            subscriptions: SubscriptionManager::new(),
+            jobs: JobRegistry::new(),
+            session_principals: DashMap::new(),
+            credential_provisioner: self.credential_provisioner,
+            credential_ledger: CredentialLedger::new(),
+            idempotency_index: DashMap::new(),
+            terminal_retention: self.terminal_retention,
+        });
+        // Background maintenance task (#72, #85): periodically sweep
+        // terminal jobs past the retention window and evict their
+        // idempotency records. Holds a Weak ref so it exits once the last
+        // ARCPRuntime handle is dropped. The cadence is a fixed interval
+        // (independent of the retention window) so retention only controls
+        // *eligibility*, not how often the sweep runs.
+        let weak = Arc::downgrade(&inner);
+        let retention = self.terminal_retention;
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(MAINTENANCE_INTERVAL);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // The first tick fires immediately; skip the sweep work it
+            // would otherwise do on an empty runtime.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let Some(inner) = weak.upgrade() else { break };
+                sweep_terminal_state(&inner, retention);
+            }
+        });
+        Ok(ARCPRuntime { inner })
     }
+}
+
+/// Fixed cadence for the background terminal-job maintenance sweep.
+const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Sweep terminal jobs older than `retention` and drop the idempotency
+/// records bound to the swept jobs. Returns the number of jobs swept.
+fn sweep_terminal_state(inner: &RuntimeInner, retention: Duration) -> usize {
+    let swept = inner.jobs.sweep_terminals_older_than(retention);
+    if !swept.is_empty() {
+        let swept_set: HashSet<&JobId> = swept.iter().collect();
+        inner
+            .idempotency_index
+            .retain(|_, rec| !swept_set.contains(&rec.accepted.job_id));
+    }
+    swept.len()
 }
 
 struct RuntimeInner {
@@ -218,8 +274,11 @@ struct RuntimeInner {
     /// Keyed by `(principal-or-session, idempotency_key)`; resolves a
     /// repeat command intent to the original `JobAccepted` payload so
     /// retries return the same `job_id` instead of starting a duplicate
-    /// job.
+    /// job. Bounded by [`Self::terminal_retention`] via the maintenance
+    /// sweep (#85).
     idempotency_index: DashMap<IdempotencyScope, IdempotencyRecord>,
+    /// Retention window for terminal jobs and their idempotency records.
+    terminal_retention: Duration,
 }
 
 /// Scope key for logical idempotency. Authenticated requests scope by
@@ -273,6 +332,32 @@ impl ARCPRuntime {
     #[must_use]
     pub fn subscriptions(&self) -> &SubscriptionManager {
         &self.inner.subscriptions
+    }
+
+    /// Run one terminal-job maintenance sweep using the configured
+    /// retention window and return the number of jobs evicted.
+    ///
+    /// Drops terminal jobs whose terminal instant is older than the
+    /// retention window from the [`JobRegistry`] and removes the
+    /// idempotency records bound to them (#72, #85). The runtime also runs
+    /// this periodically in the background; this entry point exists for
+    /// callers (and tests) that want to force a sweep deterministically.
+    #[must_use]
+    pub fn sweep_terminal_jobs(&self) -> usize {
+        sweep_terminal_state(&self.inner, self.inner.terminal_retention)
+    }
+
+    /// Number of jobs currently retained in the registry.
+    #[must_use]
+    pub fn job_count(&self) -> usize {
+        self.inner.jobs.len()
+    }
+
+    /// Number of live idempotency records (ARCP v1.1 §7.2). Bounded by the
+    /// terminal-retention sweep (#85).
+    #[must_use]
+    pub fn idempotency_index_len(&self) -> usize {
+        self.inner.idempotency_index.len()
     }
 
     /// Spawn a per-connection task that drives the handshake and then
@@ -417,7 +502,11 @@ impl ARCPRuntime {
         // keyed by `job_id`.
         let connection_job_subs: Arc<DashMap<JobId, JoinHandle<()>>> = Arc::new(DashMap::new());
         let mut state: Option<SessionState> = None;
-        let mut seen_ids: HashSet<MessageId> = HashSet::new();
+        // Transport-level dedup over a bounded sliding window of recent
+        // message ids (#86). A long-lived durable session can receive an
+        // unbounded number of messages, so we cap the window instead of
+        // retaining every id ever seen.
+        let mut seen_ids = RecentIdSet::new(DEDUP_WINDOW);
         // ARCP v1.1 durable-job semantics (§10.1, README §"Reconnect"):
         // a normal transport drop must NOT cancel in-flight jobs. We
         // only tear down jobs when the client sends `session.close`.
@@ -428,7 +517,7 @@ impl ARCPRuntime {
                 break Ok(());
             };
 
-            // Transport-level idempotency check.
+            // Transport-level idempotency check over the recent-id window.
             if !seen_ids.insert(envelope.id.clone()) {
                 tracing::debug!(id = %envelope.id, "dropping replayed envelope");
                 continue;
@@ -1455,6 +1544,48 @@ enum Outcome {
     Cancelled(String),
 }
 
+/// Size of the per-connection transport-dedup window (#86). Replays older
+/// than this many distinct received ids are no longer detected; in practice
+/// replays only target a recent window.
+const DEDUP_WINDOW: usize = 8192;
+
+/// Bounded set of recently-seen message ids with FIFO eviction.
+///
+/// Backs transport-level dedup with O(1) membership and a fixed memory
+/// ceiling of `cap` ids, replacing an unbounded `HashSet` (#86).
+struct RecentIdSet {
+    set: HashSet<MessageId>,
+    order: VecDeque<MessageId>,
+    cap: usize,
+}
+
+impl RecentIdSet {
+    fn new(cap: usize) -> Self {
+        Self {
+            set: HashSet::new(),
+            order: VecDeque::new(),
+            cap: cap.max(1),
+        }
+    }
+
+    /// Record `id`. Returns `true` if it was newly inserted, `false` if it
+    /// is a duplicate within the current window. Evicts the oldest id when
+    /// the window is full.
+    fn insert(&mut self, id: MessageId) -> bool {
+        if self.set.contains(&id) {
+            return false;
+        }
+        if self.order.len() >= self.cap {
+            if let Some(old) = self.order.pop_front() {
+                self.set.remove(&old);
+            }
+        }
+        self.set.insert(id.clone());
+        self.order.push_back(id);
+        true
+    }
+}
+
 fn effective_lease(payload: &ToolInvokePayload) -> Option<LeaseRequest> {
     if let Some(lease) = payload.lease_request.clone() {
         return Some(lease);
@@ -1576,5 +1707,38 @@ const fn intersect_bool(a: Option<bool>, b: Option<bool>) -> Option<bool> {
         (Some(true), Some(true)) => Some(true),
         (Some(_), _) | (_, Some(_)) => Some(false),
         (None, None) => None,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod recent_id_set_tests {
+    use super::{MessageId, RecentIdSet};
+
+    #[test]
+    fn detects_duplicates_within_window() {
+        let mut set = RecentIdSet::new(4);
+        let id = MessageId::new();
+        assert!(set.insert(id.clone()));
+        assert!(!set.insert(id), "same id is a duplicate");
+    }
+
+    #[test]
+    fn evicts_oldest_when_capacity_exceeded() {
+        let mut set = RecentIdSet::new(2);
+        let a = MessageId::new();
+        let b = MessageId::new();
+        let c = MessageId::new();
+        assert!(set.insert(a.clone()));
+        assert!(set.insert(b.clone()));
+        // Inserting c evicts a (oldest); window is now [b, c].
+        assert!(set.insert(c.clone()));
+        assert_eq!(set.order.len(), 2);
+        assert_eq!(set.set.len(), 2);
+        // b and c are still within the window → duplicates.
+        assert!(!set.insert(b), "b still tracked");
+        assert!(!set.insert(c), "c still tracked");
+        // a fell out of the window, so it is treated as new again.
+        assert!(set.insert(a), "a was evicted and is new again");
     }
 }

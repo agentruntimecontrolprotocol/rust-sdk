@@ -11,6 +11,7 @@
 
 use dashmap::DashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -69,6 +70,10 @@ impl std::fmt::Debug for JobRegistry {
 struct JobRecord {
     entry: JobEntry,
     join: Option<JoinHandle<()>>,
+    /// When the job first entered a terminal state. Used to bound terminal
+    /// retention (ARCP §10.1 resume window): terminal jobs are kept for a
+    /// configurable window after this instant, then swept.
+    terminated_at: Option<Instant>,
 }
 
 impl std::fmt::Debug for JobRecord {
@@ -79,6 +84,7 @@ impl std::fmt::Debug for JobRecord {
                 "join_finished",
                 &self.join.as_ref().is_some_and(JoinHandle::is_finished),
             )
+            .field("terminated_at", &self.terminated_at)
             .finish()
     }
 }
@@ -99,14 +105,20 @@ impl JobRegistry {
             JobRecord {
                 entry,
                 join: Some(join),
+                terminated_at: None,
             },
         );
     }
 
-    /// Update the state for `job_id`.
+    /// Update the state for `job_id`. Stamps the terminal timestamp the
+    /// first time the job enters a terminal state so retention can be
+    /// bounded relative to that instant.
     pub fn set_state(&self, job_id: &JobId, state: JobState) {
         if let Some(mut r) = self.inner.get_mut(job_id) {
             r.entry.state = state;
+            if state.is_terminal() && r.terminated_at.is_none() {
+                r.terminated_at = Some(Instant::now());
+            }
         }
     }
 
@@ -132,10 +144,34 @@ impl JobRegistry {
         self.inner.is_empty()
     }
 
-    /// Drop terminal jobs from the registry. Should be called periodically
-    /// (Phase 5+) to cap memory.
+    /// Drop all terminal jobs from the registry immediately, regardless of
+    /// how recently they terminated. Equivalent to
+    /// [`Self::sweep_terminals_older_than`] with a zero retention window.
     pub fn sweep_terminals(&self) {
         self.inner.retain(|_, r| !r.entry.state.is_terminal());
+    }
+
+    /// Drop terminal jobs whose terminal instant is older than `retention`,
+    /// returning the ids that were swept.
+    ///
+    /// Non-terminal jobs and terminal jobs still inside the retention window
+    /// are preserved so recent `session.list_jobs` / `job.subscribe`
+    /// visibility is not lost. Called by the runtime's maintenance path to
+    /// bound memory on long-lived runtimes (#72).
+    #[must_use]
+    pub fn sweep_terminals_older_than(&self, retention: Duration) -> Vec<JobId> {
+        let now = Instant::now();
+        let mut swept = Vec::new();
+        self.inner.retain(|id, r| {
+            let expired = r.entry.state.is_terminal()
+                && r.terminated_at
+                    .is_some_and(|t| now.saturating_duration_since(t) >= retention);
+            if expired {
+                swept.push(id.clone());
+            }
+            !expired
+        });
+        swept
     }
 
     /// Snapshot of all jobs scoped to `session_id`, applying an optional
@@ -189,17 +225,6 @@ impl JobRegistry {
             .collect();
         out.sort_by_key(|e| e.created_at);
         out
-    }
-
-    /// Increment and return the new `last_event_seq` for `job_id`.
-    ///
-    /// Returns `None` if the job is not registered.
-    #[must_use]
-    pub fn bump_event_seq(&self, job_id: &JobId) -> Option<u64> {
-        self.inner.get_mut(job_id).map(|mut r| {
-            r.entry.last_event_seq += 1;
-            r.entry.last_event_seq
-        })
     }
 
     /// Record the session-scoped sequence number of the most recent
@@ -347,5 +372,37 @@ mod tests {
         assert!(reg.cancel(&running_id));
         // Terminal job was already swept.
         assert!(!reg.cancel(&done_id));
+    }
+
+    #[tokio::test]
+    async fn sweep_older_than_respects_retention_window() {
+        let reg = JobRegistry::new();
+        let (entry, join) = make_entry(JobState::Accepted);
+        let id = entry.job_id.clone();
+        reg.insert(entry, join);
+        // Transition to terminal stamps terminated_at.
+        reg.set_state(&id, JobState::Completed);
+        assert_eq!(reg.len(), 1);
+
+        // With a long retention window the job is still inside it.
+        let swept = reg.sweep_terminals_older_than(Duration::from_secs(3600));
+        assert!(swept.is_empty());
+        assert_eq!(reg.len(), 1);
+
+        // With a zero window the terminal job is swept and reported.
+        let swept = reg.sweep_terminals_older_than(Duration::ZERO);
+        assert_eq!(swept, vec![id]);
+        assert_eq!(reg.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn sweep_older_than_keeps_non_terminal_jobs() {
+        let reg = JobRegistry::new();
+        let (running, jh) = make_entry(JobState::Running);
+        let running_id = running.job_id.clone();
+        reg.insert(running, jh);
+        let swept = reg.sweep_terminals_older_than(Duration::ZERO);
+        assert!(swept.is_empty());
+        assert!(reg.cancel(&running_id));
     }
 }
