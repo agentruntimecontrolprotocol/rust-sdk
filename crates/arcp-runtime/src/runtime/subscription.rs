@@ -5,13 +5,14 @@
 //! `job_id`; backfill replays from the event log. Rich filter
 //! authorisation policy lands in a follow-up.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use dashmap::DashMap;
 use tokio::sync::broadcast;
 
-use arcp_core::envelope::Envelope;
-use arcp_core::ids::{SessionId, SubscriptionId};
+use arcp_core::envelope::{Envelope, Priority};
+use arcp_core::ids::{JobId, SessionId, StreamId, SubscriptionId, TraceId};
 use arcp_core::messages::SubscriptionFilter;
 
 const BROADCAST_CAPACITY: usize = 1024;
@@ -82,14 +83,20 @@ impl SubscriptionManager {
     ) -> (SubscriptionId, FilteredReceiver) {
         let id = SubscriptionId::new();
         let rx = self.inner.bus.subscribe();
-        self.inner.subs.insert(
-            id.clone(),
-            ActiveSubscription {
-                filter: filter.clone(),
-                session_id,
+        // Compile the wire filter into a set-backed representation ONCE at
+        // registration so the hot fan-out path does O(1)/O(log n) membership
+        // checks instead of rescanning Vecs for every envelope (#77).
+        let compiled = CompiledFilter::from_wire(&filter);
+        self.inner
+            .subs
+            .insert(id.clone(), ActiveSubscription { filter, session_id });
+        (
+            id,
+            FilteredReceiver {
+                inner: rx,
+                filter: compiled,
             },
-        );
-        (id, FilteredReceiver { inner: rx, filter })
+        )
     }
 
     /// Tear down a subscription. Returns whether it existed.
@@ -116,10 +123,10 @@ impl SubscriptionManager {
     }
 }
 
-/// Receiver that yields envelopes matching a [`SubscriptionFilter`].
+/// Receiver that yields envelopes matching a compiled subscription filter.
 pub struct FilteredReceiver {
     inner: broadcast::Receiver<Envelope>,
-    filter: SubscriptionFilter,
+    filter: CompiledFilter,
 }
 
 impl std::fmt::Debug for FilteredReceiver {
@@ -137,7 +144,7 @@ impl FilteredReceiver {
         loop {
             match self.inner.recv().await {
                 Ok(env) => {
-                    if matches(&self.filter, &env) {
+                    if self.filter.matches(&env) {
                         return Some(env);
                     }
                 }
@@ -145,6 +152,84 @@ impl FilteredReceiver {
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
         }
+    }
+}
+
+/// Set-backed compilation of a [`SubscriptionFilter`] for the live
+/// fan-out path (#77).
+///
+/// The wire [`SubscriptionFilter`] stores list-valued fields as `Vec`s,
+/// which are immutable after registration. Compiling them into
+/// [`HashSet`]s once at registration turns each per-envelope membership
+/// test into O(1) instead of an O(list-size) scan repeated for every
+/// envelope on every subscription. The wire/API shape of
+/// `SubscriptionFilter` is unchanged.
+#[derive(Debug, Clone, Default)]
+struct CompiledFilter {
+    session_id: HashSet<SessionId>,
+    trace_id: HashSet<TraceId>,
+    job_id: HashSet<JobId>,
+    stream_id: HashSet<StreamId>,
+    types: HashSet<String>,
+    min_priority: Option<Priority>,
+}
+
+impl CompiledFilter {
+    fn from_wire(filter: &SubscriptionFilter) -> Self {
+        Self {
+            session_id: filter.session_id.iter().cloned().collect(),
+            trace_id: filter.trace_id.iter().cloned().collect(),
+            job_id: filter.job_id.iter().cloned().collect(),
+            stream_id: filter.stream_id.iter().cloned().collect(),
+            types: filter.types.iter().cloned().collect(),
+            min_priority: filter.min_priority,
+        }
+    }
+
+    /// True if `envelope` satisfies the filter (AND across fields, OR
+    /// within list-valued fields), using O(1) set membership.
+    fn matches(&self, envelope: &Envelope) -> bool {
+        if !self.session_id.is_empty()
+            && !envelope
+                .session_id
+                .as_ref()
+                .is_some_and(|s| self.session_id.contains(s))
+        {
+            return false;
+        }
+        if !self.trace_id.is_empty()
+            && !envelope
+                .trace_id
+                .as_ref()
+                .is_some_and(|t| self.trace_id.contains(t))
+        {
+            return false;
+        }
+        if !self.job_id.is_empty()
+            && !envelope
+                .job_id
+                .as_ref()
+                .is_some_and(|j| self.job_id.contains(j))
+        {
+            return false;
+        }
+        if !self.stream_id.is_empty()
+            && !envelope
+                .stream_id
+                .as_ref()
+                .is_some_and(|s| self.stream_id.contains(s))
+        {
+            return false;
+        }
+        if !self.types.is_empty() && !self.types.contains(envelope.payload.type_name()) {
+            return false;
+        }
+        if let Some(min) = self.min_priority {
+            if priority_rank(envelope.priority) < priority_rank(min) {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -315,6 +400,36 @@ mod tests {
         let s = SessionId::new();
         let (_id, rx) = mgr.register(SubscriptionFilter::default(), s);
         let _ = format!("{rx:?}");
+    }
+
+    #[tokio::test]
+    async fn compiled_filter_with_large_lists_matches_correctly() {
+        // Regression for #77: a subscription with large id lists receiving
+        // many envelopes must still match by set membership. We build a
+        // 1000-entry session filter, then publish a burst and confirm only
+        // the targeted session is delivered.
+        let mgr = SubscriptionManager::new();
+        let target = SessionId::new();
+        let mut sessions: Vec<SessionId> = (0..1000).map(|_| SessionId::new()).collect();
+        sessions.push(target.clone());
+        let filter = SubscriptionFilter {
+            session_id: sessions,
+            ..SubscriptionFilter::default()
+        };
+        let (_id, mut rx) = mgr.register(filter, target.clone());
+
+        // Publish 50 envelopes for non-matching sessions and one for the
+        // target.
+        for _ in 0..50 {
+            let _ = mgr.publish(&ping_for(&SessionId::new()));
+        }
+        let _ = mgr.publish(&ping_for(&target));
+
+        let env = tokio::time::timeout(std::time::Duration::from_millis(200), rx.next())
+            .await
+            .expect("timely")
+            .expect("envelope");
+        assert_eq!(env.session_id.as_ref(), Some(&target));
     }
 
     #[tokio::test]
