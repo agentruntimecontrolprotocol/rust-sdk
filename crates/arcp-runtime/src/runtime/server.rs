@@ -672,6 +672,7 @@ impl ARCPRuntime {
                             &fwd_tx,
                             &self.inner.subscriptions,
                             &self.inner.jobs,
+                            &self.inner.event_log,
                             &self.inner.session_principals,
                             &connection_job_subs,
                             envelope.id.clone(),
@@ -1423,12 +1424,13 @@ impl ARCPRuntime {
         connection_subs.insert(subscription_id, join);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn handle_job_subscribe(
         out: &mpsc::Sender<Envelope>,
         fwd: &mpsc::Sender<Envelope>,
         manager: &SubscriptionManager,
         jobs: &JobRegistry,
+        event_log: &EventLog,
         session_principals: &DashMap<SessionId, Option<String>>,
         connection_job_subs: &Arc<DashMap<JobId, JoinHandle<()>>>,
         correlation_id: MessageId,
@@ -1438,8 +1440,8 @@ impl ARCPRuntime {
     ) {
         let JobSubscribePayload {
             job_id,
-            from_event_seq: _,
-            history: _,
+            from_event_seq,
+            history,
         } = payload;
 
         let Some(snap) = jobs.snapshot(&job_id) else {
@@ -1479,31 +1481,76 @@ impl ARCPRuntime {
             }
         }
 
-        // Build a filter that selects only this job's envelopes.
+        // Build a filter that selects only this job's envelopes. Register
+        // the live subscription BEFORE reading replay history so no live
+        // event emitted during replay is lost (the broadcast buffer holds
+        // them until the forwarder attaches; duplicates are deduped by
+        // `event_seq` below).
         let filter = arcp_core::messages::SubscriptionFilter {
             job_id: vec![job_id.clone()],
             ..arcp_core::messages::SubscriptionFilter::default()
         };
         let (_internal_id, mut rx) = manager.register(filter, subscriber_session.clone());
 
-        // Acknowledge.
+        // ARCP v1.1 §7.6 history replay: when the subscriber requests
+        // `history: true` with `from_event_seq`, replay buffered events
+        // with `event_seq > from_event_seq` before live streaming.
+        let replay_from = from_event_seq.unwrap_or(0);
+        let replay_events = if history {
+            event_log
+                .replay_job_events_after_seq(job_id.as_str(), replay_from, REPLAY_LIMIT)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, job_id = %job_id, "job.subscribe history replay failed");
+                    Vec::new()
+                })
+        } else {
+            Vec::new()
+        };
+        let replay_high_water = replay_events
+            .iter()
+            .filter_map(|ev| ev.envelope.event_seq)
+            .max()
+            .unwrap_or(replay_from);
+        let replayed = !replay_events.is_empty();
+
+        // Acknowledge. `replayed` reflects whether buffered events were
+        // replayed; `subscribed_from` is the seq live streaming resumes
+        // after (the replay high-water mark when replaying).
         let ack = JobSubscribedPayload {
             job_id: job_id.clone(),
             current_status: snap.state.wire_str().to_owned(),
             agent: snap.agent.clone(),
             parent_job_id: snap.parent_job_id.clone(),
             trace_id: None,
-            subscribed_from: snap.last_event_seq,
-            // History replay is not yet implemented in this SDK; the ack
-            // always carries `replayed: false`, matching live-only
-            // semantics (§7.6 permits `history: false`).
-            replayed: false,
+            subscribed_from: if replayed {
+                replay_high_water
+            } else {
+                snap.last_event_seq
+            },
+            replayed,
         };
         let mut ack_env = Envelope::new(MessageType::JobSubscribed(ack));
         ack_env.correlation_id = Some(correlation_id);
         ack_env.session_id = Some(subscriber_session.clone());
         ack_env.job_id = Some(job_id.clone());
         let _ = out.send(ack_env).await;
+
+        // Replay buffered events (in seq order) before live streaming.
+        // These are already-persisted copies, so they go on the dedicated
+        // forwarding channel (§82 anti-echo) with the session id rewritten.
+        for logged in replay_events {
+            let Ok(mut env) = logged.envelope.try_into_typed() else {
+                continue;
+            };
+            if !is_forwardable_job_event(&env.payload) {
+                continue;
+            }
+            env.session_id = Some(subscriber_session.clone());
+            if fwd.send(env).await.is_err() {
+                return;
+            }
+        }
 
         // Spawn forwarder: rewrites session_id to the subscriber's so
         // client-side parsers route correctly. The originating session's
@@ -1526,6 +1573,13 @@ impl ARCPRuntime {
                 // tool.invoke, cancel) which can appear on the bus.
                 if !is_forwardable_job_event(&env.payload) {
                     continue;
+                }
+                // Dedup against replayed history: any countable event whose
+                // seq was already replayed must not be delivered twice.
+                if let Some(seq) = env.event_seq {
+                    if seq <= replay_high_water {
+                        continue;
+                    }
                 }
                 env.session_id = Some(subscriber_session_clone.clone());
                 if fwd_clone.send(env).await.is_err() {
@@ -1598,6 +1652,10 @@ enum Outcome {
     Failed(ARCPError),
     Cancelled(String),
 }
+
+/// Upper bound on the number of buffered events replayed for one
+/// `job.subscribe` history request (ARCP v1.1 §7.6).
+const REPLAY_LIMIT: i64 = 10_000;
 
 /// Size of the per-connection transport-dedup window (#86). Replays older
 /// than this many distinct received ids are no longer detected; in practice

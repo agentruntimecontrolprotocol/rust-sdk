@@ -229,6 +229,94 @@ async fn cross_session_subscribe_delivers_single_terminal_event() {
     );
 }
 
+/// ARCP v1.1 §7.6 — `job.subscribe` with `history: true` and
+/// `from_event_seq: N` replays buffered job events with `event_seq > N`
+/// before live streaming and sets `replayed: true`.
+#[tokio::test]
+async fn job_subscribe_replays_history_when_requested() {
+    let runtime = ARCPRuntime::builder()
+        .with_authenticator(Box::new(
+            BearerAuthenticator::new().with_token("token-A", "shared-principal"),
+        ))
+        .with_tools(
+            ToolRegistryBuilder::new()
+                .with(Arc::new(SlowEchoTool))
+                .build(),
+        )
+        .build()
+        .await
+        .expect("build");
+
+    let (submitter, sub_session) = open_session(&runtime, "submitter", "token-A").await;
+
+    // Submit a job and let it run to completion so its events are buffered
+    // in the event log.
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "slow-echo",
+        serde_json::json!({"hello": "world"}),
+    )));
+    invoke.session_id = Some(sub_session.clone());
+    submitter.send(invoke).await.expect("send invoke");
+    let accepted = submitter.recv().await.expect("recv").expect("envelope");
+    let MessageType::JobAccepted(accepted) = accepted.payload else {
+        panic!("expected job.accepted");
+    };
+    let job_id = accepted.job_id;
+    // Drain until the submitter observes job.completed.
+    let mut submitter_completed = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        if let Ok(Ok(Some(env))) =
+            tokio::time::timeout(Duration::from_millis(300), submitter.recv()).await
+        {
+            if matches!(env.payload, MessageType::JobCompleted(_)) {
+                submitter_completed = true;
+                break;
+            }
+        }
+    }
+    assert!(submitter_completed, "job did not complete in time");
+
+    // A second same-principal session subscribes AFTER completion with
+    // history replay from the beginning.
+    let (observer, obs_session) = open_session(&runtime, "observer", "token-A").await;
+    let mut sub = Envelope::new(MessageType::JobSubscribe(JobSubscribePayload {
+        job_id: job_id.clone(),
+        from_event_seq: Some(0),
+        history: true,
+    }));
+    sub.session_id = Some(obs_session.clone());
+    observer.send(sub).await.expect("send subscribe");
+
+    // First response: job.subscribed with replayed = true.
+    let ack = observer.recv().await.expect("recv").expect("envelope");
+    let MessageType::JobSubscribed(ack) = ack.payload else {
+        panic!("expected job.subscribed, got {:?}", ack.payload);
+    };
+    assert!(ack.replayed, "history replay must set replayed = true");
+
+    // Replayed events follow: we must see at least the terminal
+    // job.completed delivered from history (seq > 0), rewritten to the
+    // observer's session.
+    let mut saw_completed = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        if let Ok(Ok(Some(env))) =
+            tokio::time::timeout(Duration::from_millis(300), observer.recv()).await
+        {
+            if matches!(env.payload, MessageType::JobCompleted(_)) {
+                assert_eq!(env.session_id.as_ref(), Some(&obs_session));
+                saw_completed = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        saw_completed,
+        "observer did not receive replayed job.completed"
+    );
+}
+
 #[tokio::test]
 async fn job_subscribe_for_unknown_job_returns_not_found_nack() {
     let runtime = ARCPRuntime::builder()

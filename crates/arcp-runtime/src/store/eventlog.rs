@@ -143,6 +143,7 @@ impl EventLog {
             let idempotency_key_str = raw.idempotency_key.as_ref().map(ToString::to_string);
             let timestamp_str = raw.timestamp.to_rfc3339();
             let priority_str = priority_str(raw.priority);
+            let event_seq = raw.event_seq.map(|s| i64::try_from(s).unwrap_or(i64::MAX));
 
             let conn = inner.blocking_lock();
             let changed = conn.execute(
@@ -150,8 +151,8 @@ impl EventLog {
                     id, session_id, job_id, stream_id, subscription_id,
                     type_name, correlation_id, causation_id,
                     trace_id, span_id, idempotency_key,
-                    timestamp_utc, priority, body
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    timestamp_utc, priority, event_seq, body
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     raw.id.to_string(),
                     session_id_str,
@@ -166,6 +167,7 @@ impl EventLog {
                     idempotency_key_str,
                     timestamp_str,
                     priority_str,
+                    event_seq,
                     body,
                 ],
             )?;
@@ -206,13 +208,58 @@ impl EventLog {
                 "SELECT rowid, id, session_id, job_id, stream_id, subscription_id,
                     type_name, correlation_id, causation_id,
                     trace_id, span_id, idempotency_key,
-                    timestamp_utc, priority, body
+                    timestamp_utc, priority, event_seq, body
                  FROM events
                  WHERE session_id = ?1 AND rowid > ?2
                  ORDER BY rowid ASC
                  LIMIT ?3",
             )?;
             let rows = stmt.query_map(params![session_id, after_rowid, limit], row_to_logged)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|join| ARCPError::Internal {
+            detail: format!("event log spawn_blocking join: {join}"),
+        })?
+        .map_err(|e| ARCPError::Storage {
+            detail: e.to_string(),
+        })
+    }
+
+    /// Replay buffered events for `job_id` whose `event_seq` is strictly
+    /// greater than `from_event_seq`, in sequence order (ARCP v1.1 §7.6
+    /// `job.subscribe` history replay). Only rows carrying an `event_seq`
+    /// (countable job events) are returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ARCPError::Storage`] for any underlying `SQLite` error.
+    pub async fn replay_job_events_after_seq(
+        &self,
+        job_id: &str,
+        from_event_seq: u64,
+        limit: i64,
+    ) -> Result<Vec<LoggedEvent>, ARCPError> {
+        let inner = Arc::clone(&self.inner);
+        let job_id = job_id.to_owned();
+        let from_seq = i64::try_from(from_event_seq).unwrap_or(i64::MAX);
+        task::spawn_blocking(move || -> Result<Vec<LoggedEvent>, rusqlite::Error> {
+            let conn = inner.blocking_lock();
+            let mut stmt = conn.prepare(
+                "SELECT rowid, id, session_id, job_id, stream_id, subscription_id,
+                    type_name, correlation_id, causation_id,
+                    trace_id, span_id, idempotency_key,
+                    timestamp_utc, priority, event_seq, body
+                 FROM events
+                 WHERE job_id = ?1 AND event_seq IS NOT NULL AND event_seq > ?2
+                 ORDER BY event_seq ASC
+                 LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![job_id, from_seq, limit], row_to_logged)?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
@@ -243,7 +290,7 @@ impl EventLog {
                     "SELECT rowid, id, session_id, job_id, stream_id, subscription_id,
                         type_name, correlation_id, causation_id,
                         trace_id, span_id, idempotency_key,
-                        timestamp_utc, priority, body
+                        timestamp_utc, priority, event_seq, body
                      FROM events WHERE id = ?1",
                     params![id],
                     row_to_logged,
@@ -306,6 +353,7 @@ fn row_to_logged(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoggedEvent> {
     let idempotency_key: Option<String> = row.get("idempotency_key")?;
     let timestamp_utc: String = row.get("timestamp_utc")?;
     let priority: String = row.get("priority")?;
+    let event_seq: Option<i64> = row.get("event_seq")?;
     let body: String = row.get("body")?;
 
     // We assemble a JSON Value of the raw envelope, then deserialise.
@@ -333,6 +381,12 @@ fn row_to_logged(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoggedEvent> {
     insert_opt(&mut value, "idempotency_key", idempotency_key);
     if priority != "normal" {
         value.insert("priority".into(), serde_json::Value::String(priority));
+    }
+    if let Some(seq) = event_seq {
+        value.insert(
+            "event_seq".into(),
+            serde_json::Value::Number(serde_json::Number::from(seq.max(0))),
+        );
     }
 
     let envelope: RawEnvelope =
@@ -423,6 +477,53 @@ mod tests {
             .expect("after first");
         assert_eq!(after_first.len(), 1);
         assert_eq!(after_first[0].rowid, only_a[1].rowid);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::cast_precision_loss)]
+    async fn replay_job_events_filters_by_seq_and_orders() {
+        use arcp_core::ids::JobId;
+        use arcp_core::messages::{JobProgressPayload, JobState};
+
+        let log = EventLog::in_memory().await.expect("open");
+        let session = SessionId::new();
+        let job = JobId::new();
+        // Append three job-scoped progress events with ascending seq, plus
+        // one event for a different job that must be excluded.
+        for seq in 1u64..=3 {
+            let mut env = Envelope::new(MessageType::JobProgress(JobProgressPayload::new(
+                seq as f64,
+            )));
+            env.session_id = Some(session.clone());
+            env.job_id = Some(job.clone());
+            env.event_seq = Some(seq);
+            log.append(&env).await.expect("append job event");
+        }
+        let mut other = Envelope::new(MessageType::JobHeartbeat(
+            arcp_core::messages::JobHeartbeatPayload {
+                sequence: 1,
+                deadline_ms: None,
+                state: JobState::Running,
+            },
+        ));
+        other.session_id = Some(session.clone());
+        other.job_id = Some(JobId::new());
+        other.event_seq = Some(99);
+        log.append(&other).await.expect("append other job");
+
+        // Replay seq > 1 → expect events 2 and 3 in order, no other job.
+        let replayed = log
+            .replay_job_events_after_seq(job.as_str(), 1, 100)
+            .await
+            .expect("replay");
+        let seqs: Vec<u64> = replayed
+            .iter()
+            .filter_map(|e| e.envelope.event_seq)
+            .collect();
+        assert_eq!(seqs, vec![2, 3]);
+        for ev in &replayed {
+            assert_eq!(ev.envelope.job_id.as_ref(), Some(&job));
+        }
     }
 
     #[tokio::test]

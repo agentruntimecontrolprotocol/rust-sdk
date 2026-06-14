@@ -21,12 +21,15 @@ CREATE TABLE IF NOT EXISTS events (
     idempotency_key TEXT,
     timestamp_utc   TEXT    NOT NULL,
     priority        TEXT    NOT NULL DEFAULT 'normal',
+    event_seq       INTEGER,
     body            TEXT    NOT NULL,
     UNIQUE (session_id, id)
 );
 
 CREATE INDEX IF NOT EXISTS events_session_idx       ON events (session_id);
 CREATE INDEX IF NOT EXISTS events_job_idx           ON events (job_id);
+-- Accelerates §7.6 job.subscribe history replay (seq > from_event_seq).
+CREATE INDEX IF NOT EXISTS events_job_seq_idx        ON events (job_id, event_seq);
 CREATE INDEX IF NOT EXISTS events_stream_idx        ON events (stream_id);
 CREATE INDEX IF NOT EXISTS events_subscription_idx  ON events (subscription_id);
 CREATE INDEX IF NOT EXISTS events_type_idx          ON events (type_name);
