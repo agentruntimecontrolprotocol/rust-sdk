@@ -53,8 +53,8 @@ pub use session::{
     SessionAckPayload, SessionAuthenticatePayload, SessionChallengePayload, SessionClosePayload,
     SessionClosedPayload, SessionEvictedPayload, SessionJobsPayload, SessionLease,
     SessionListJobsFilter, SessionListJobsPayload, SessionOpenPayload, SessionPingPayload,
-    SessionPongPayload, SessionRefreshPayload, SessionRejectedPayload,
-    SessionUnauthenticatedPayload,
+    SessionPongPayload, SessionRefreshPayload, SessionRejectedPayload, SessionResumePayload,
+    SessionResumedPayload, SessionUnauthenticatedPayload,
 };
 pub use streaming::{
     StreamChunkPayload, StreamClosePayload, StreamErrorPayload, StreamKind, StreamOpenPayload,
@@ -299,6 +299,12 @@ pub enum MessageType {
     /// `session.closed` — runtime ack of a graceful close (ARCP v1.1 §6.7).
     #[serde(rename = "session.closed")]
     SessionClosed(SessionClosedPayload),
+    /// `session.resume` — client reconnect with resume token (ARCP v1.1 §6.3).
+    #[serde(rename = "session.resume")]
+    SessionResume(SessionResumePayload),
+    /// `session.resumed` — runtime ack of a successful resume (ARCP v1.1 §6.3).
+    #[serde(rename = "session.resumed")]
+    SessionResumed(SessionResumedPayload),
     /// `session.ping` (ARCP v1.1 §6.4) — session-scoped heartbeat.
     ///
     /// Canonical heartbeat per ARCP v1.1; the generic `Ping`/`Pong`
@@ -499,6 +505,8 @@ impl MessageType {
             Self::SessionEvicted(_) => "session.evicted",
             Self::SessionClose(_) => "session.close",
             Self::SessionClosed(_) => "session.closed",
+            Self::SessionResume(_) => "session.resume",
+            Self::SessionResumed(_) => "session.resumed",
             Self::SessionPing(_) => "session.ping",
             Self::SessionPong(_) => "session.pong",
             Self::SessionAck(_) => "session.ack",
@@ -567,6 +575,10 @@ impl MessageType {
                 | Self::SessionAccepted(_)
                 | Self::SessionUnauthenticated(_)
                 | Self::SessionRejected(_)
+                // §6.3 resume is a reconnect handshake: a fresh connection
+                // sends session.resume in place of session.open.
+                | Self::SessionResume(_)
+                | Self::SessionResumed(_)
         )
     }
 
@@ -590,6 +602,8 @@ impl MessageType {
                 | Self::SessionEvicted(_)
                 | Self::SessionClose(_)
                 | Self::SessionClosed(_)
+                | Self::SessionResume(_)
+                | Self::SessionResumed(_)
                 | Self::SessionPing(_)
                 | Self::SessionPong(_)
                 | Self::SessionAck(_)
@@ -1017,6 +1031,7 @@ mod tests {
                     },
                     capabilities: Capabilities::default(),
                     lease: None,
+                    resume_token: None,
                 }),
                 "session.accepted",
             ),
@@ -1051,6 +1066,26 @@ mod tests {
             (
                 MessageType::SessionClose(SessionClosePayload::default()),
                 "session.close",
+            ),
+            (
+                MessageType::SessionClosed(SessionClosedPayload::default()),
+                "session.closed",
+            ),
+            (
+                MessageType::SessionResume(SessionResumePayload {
+                    resume_token: "rt_x".into(),
+                    last_event_seq: 0,
+                }),
+                "session.resume",
+            ),
+            (
+                MessageType::SessionResumed(SessionResumedPayload {
+                    session_id: crate::ids::SessionId::new(),
+                    resume_token: "rt_y".into(),
+                    replayed_from: 0,
+                    replayed: false,
+                }),
+                "session.resumed",
             ),
             (
                 MessageType::SessionPing(SessionPingPayload {
@@ -1431,8 +1466,8 @@ mod tests {
         for (msg, expected) in &cases {
             assert_eq!(msg.type_name(), *expected);
         }
-        // 62 message variants — sanity-check we built exactly that many.
+        // Message variants — sanity-check we built exactly that many.
         // Bump this when MessageType grows.
-        assert_eq!(cases.len(), 62);
+        assert_eq!(cases.len(), 65);
     }
 }

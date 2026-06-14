@@ -121,6 +121,39 @@ pub struct SessionAcceptedPayload {
     /// Session lease (optional but recommended).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease: Option<SessionLease>,
+    /// Resume token (ARCP v1.1 §6.3). Rotates on every successful welcome;
+    /// the client presents the most recent value in `session.resume` to
+    /// reconnect after a transport drop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_token: Option<String>,
+}
+
+/// Payload for `session.resume` (ARCP v1.1 §6.3).
+///
+/// A reconnecting client presents its most recent `resume_token` and the
+/// `last_event_seq` it has received; the runtime replays buffered events
+/// with `seq > last_event_seq` or returns `RESUME_WINDOW_EXPIRED`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionResumePayload {
+    /// Most recent resume token issued to this client.
+    pub resume_token: String,
+    /// Highest `event_seq` the client has already received.
+    pub last_event_seq: u64,
+}
+
+/// Payload for `session.resumed` — the runtime's acknowledgement of a
+/// successful `session.resume` (ARCP v1.1 §6.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionResumedPayload {
+    /// The resumed session id.
+    pub session_id: SessionId,
+    /// Rotated resume token for the next reconnect.
+    pub resume_token: String,
+    /// The `last_event_seq` the client presented; replay covers events
+    /// with `seq > replayed_from`.
+    pub replayed_from: u64,
+    /// Whether any buffered events were replayed.
+    pub replayed: bool,
 }
 
 /// Payload for `session.unauthenticated` — emitted before authentication

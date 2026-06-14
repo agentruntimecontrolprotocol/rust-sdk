@@ -275,6 +275,83 @@ impl EventLog {
         })
     }
 
+    /// Replay buffered events for `session_id` whose `event_seq` is
+    /// strictly greater than `from_event_seq`, in sequence order (ARCP
+    /// v1.1 §6.3 resume). Only countable events carrying an `event_seq`
+    /// are returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ARCPError::Storage`] for any underlying `SQLite` error.
+    pub async fn replay_session_events_after_seq(
+        &self,
+        session_id: &str,
+        from_event_seq: u64,
+        limit: i64,
+    ) -> Result<Vec<LoggedEvent>, ARCPError> {
+        let inner = Arc::clone(&self.inner);
+        let session_id = session_id.to_owned();
+        let from_seq = i64::try_from(from_event_seq).unwrap_or(i64::MAX);
+        task::spawn_blocking(move || -> Result<Vec<LoggedEvent>, rusqlite::Error> {
+            let conn = inner.blocking_lock();
+            let mut stmt = conn.prepare(
+                "SELECT rowid, id, session_id, job_id, stream_id, subscription_id,
+                    type_name, correlation_id, causation_id,
+                    trace_id, span_id, idempotency_key,
+                    timestamp_utc, priority, event_seq, body
+                 FROM events
+                 WHERE session_id = ?1 AND event_seq IS NOT NULL AND event_seq > ?2
+                 ORDER BY event_seq ASC
+                 LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![session_id, from_seq, limit], row_to_logged)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|join| ARCPError::Internal {
+            detail: format!("event log spawn_blocking join: {join}"),
+        })?
+        .map_err(|e| ARCPError::Storage {
+            detail: e.to_string(),
+        })
+    }
+
+    /// Highest `event_seq` recorded for `session_id`, or `None` if the
+    /// session has no countable events yet. Used to validate §6.3 resume
+    /// coverage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ARCPError::Storage`] for any underlying `SQLite` error.
+    pub async fn max_event_seq_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<u64>, ARCPError> {
+        let inner = Arc::clone(&self.inner);
+        let session_id = session_id.to_owned();
+        task::spawn_blocking(move || -> Result<Option<u64>, rusqlite::Error> {
+            let conn = inner.blocking_lock();
+            let max: Option<i64> = conn.query_row(
+                "SELECT MAX(event_seq) FROM events
+                 WHERE session_id = ?1 AND event_seq IS NOT NULL",
+                params![session_id],
+                |row| row.get(0),
+            )?;
+            Ok(max.map(|v| u64::try_from(v).unwrap_or(0)))
+        })
+        .await
+        .map_err(|join| ARCPError::Internal {
+            detail: format!("event log spawn_blocking join: {join}"),
+        })?
+        .map_err(|e| ARCPError::Storage {
+            detail: e.to_string(),
+        })
+    }
+
     /// Fetch a single row by message id.
     ///
     /// # Errors

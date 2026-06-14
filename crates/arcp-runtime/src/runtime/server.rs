@@ -204,6 +204,7 @@ impl RuntimeBuilder {
             credential_ledger: CredentialLedger::new(),
             idempotency_index: DashMap::new(),
             terminal_retention: self.terminal_retention,
+            resume_registry: Arc::new(DashMap::new()),
         });
         // Background maintenance task (#72, #85): periodically sweep
         // terminal jobs past the retention window and evict their
@@ -281,6 +282,18 @@ struct RuntimeInner {
     idempotency_index: DashMap<IdempotencyScope, IdempotencyRecord>,
     /// Retention window for terminal jobs and their idempotency records.
     terminal_retention: Duration,
+    /// ARCP v1.1 §6.3 resume-token registry. Maps the most recently issued
+    /// `resume_token` to the session it can resume. Rotated on every
+    /// successful welcome / resume so a stale token no longer resolves.
+    resume_registry: Arc<DashMap<String, ResumeEntry>>,
+}
+
+/// Registration backing a `resume_token` (ARCP v1.1 §6.3).
+#[derive(Debug, Clone)]
+struct ResumeEntry {
+    session_id: SessionId,
+    principal: Option<String>,
+    capabilities: Capabilities,
 }
 
 /// Scope key for logical idempotency. Authenticated requests scope by
@@ -573,6 +586,16 @@ impl ARCPRuntime {
                     explicit_close = true;
                     break Ok(());
                 }
+                MessageType::SessionResume(payload) => {
+                    // ARCP v1.1 §6.3: reconnect via resume token. Allowed
+                    // in place of session.open on a fresh connection.
+                    if let Some(resumed) = self
+                        .handle_session_resume(&out_tx, &fwd_tx, envelope.id.clone(), payload)
+                        .await
+                    {
+                        state = Some(resumed);
+                    }
+                }
                 MessageType::ToolInvoke(payload) => {
                     if let Some(s) = state.as_ref() {
                         self.spawn_tool_invoke(
@@ -817,10 +840,16 @@ impl ARCPRuntime {
                 self.inner
                     .session_principals
                     .insert(session_id.clone(), Some(principal.clone()));
-                state.principal = Some(principal);
+                state.principal = Some(principal.clone());
                 state.phase = HandshakePhase::Accepted;
-                self.send_accepted(out, correlation_id, &session_id, &negotiated)
-                    .await;
+                self.send_accepted(
+                    out,
+                    correlation_id,
+                    &session_id,
+                    &negotiated,
+                    Some(principal),
+                )
+                .await;
             }
             AuthOutcome::Challenge { challenge } => {
                 state.active_challenge = Some(challenge.clone());
@@ -869,11 +898,17 @@ impl ARCPRuntime {
                     self.inner
                         .session_principals
                         .insert(state.session_id.clone(), Some(principal.clone()));
-                    state.principal = Some(principal);
+                    state.principal = Some(principal.clone());
                     state.phase = HandshakePhase::Accepted;
                     state.active_challenge = None;
-                    self.send_accepted(out, correlation_id, &state.session_id, &state.capabilities)
-                        .await;
+                    self.send_accepted(
+                        out,
+                        correlation_id,
+                        &state.session_id,
+                        &state.capabilities,
+                        Some(principal),
+                    )
+                    .await;
                     return Ok(());
                 }
                 AuthOutcome::Challenge { .. } | AuthOutcome::Reject { .. } => {}
@@ -889,6 +924,117 @@ impl ARCPRuntime {
         env.session_id = Some(state.session_id.clone());
         let _ = out.send(env).await;
         Ok(())
+    }
+
+    /// Handle a `session.resume` (ARCP v1.1 §6.3). On success, returns the
+    /// reattached [`SessionState`] and replays buffered events with
+    /// `seq > last_event_seq`; on a stale token or uncovered sequence,
+    /// emits `session.rejected` with `RESUME_WINDOW_EXPIRED` and returns
+    /// `None`.
+    async fn handle_session_resume(
+        &self,
+        out: &mpsc::Sender<Envelope>,
+        fwd: &mpsc::Sender<Envelope>,
+        correlation_id: MessageId,
+        payload: arcp_core::messages::SessionResumePayload,
+    ) -> Option<SessionState> {
+        let arcp_core::messages::SessionResumePayload {
+            resume_token,
+            last_event_seq,
+        } = payload;
+
+        // Look up the presented token. A rotated / unknown token is stale.
+        let Some(entry) = self
+            .inner
+            .resume_registry
+            .get(&resume_token)
+            .map(|r| r.value().clone())
+        else {
+            self.send_rejected(
+                out,
+                correlation_id,
+                ErrorCode::ResumeWindowExpired,
+                "resume token is unknown or has been rotated (ARCP v1.1 §6.3)".into(),
+            )
+            .await;
+            return None;
+        };
+
+        // Coverage check (§6.3): the buffer must still cover the requested
+        // sequence. With no eviction, the only uncovered case is a
+        // last_event_seq beyond what was ever emitted for the session.
+        let max_seq = self
+            .inner
+            .event_log
+            .max_event_seq_for_session(entry.session_id.as_str())
+            .await
+            .unwrap_or(None)
+            .unwrap_or(0);
+        if last_event_seq > max_seq {
+            self.send_rejected(
+                out,
+                correlation_id,
+                ErrorCode::ResumeWindowExpired,
+                format!(
+                    "resume window does not cover last_event_seq={last_event_seq} \
+                     (highest emitted={max_seq}) (ARCP v1.1 §6.3)"
+                ),
+            )
+            .await;
+            return None;
+        }
+
+        // Rotate the token: drop the presented one and mint a fresh one.
+        self.inner.resume_registry.remove(&resume_token);
+        let new_token = self.register_resume_token(
+            &entry.session_id,
+            entry.principal.clone(),
+            &entry.capabilities,
+        );
+        self.inner
+            .session_principals
+            .insert(entry.session_id.clone(), entry.principal.clone());
+
+        // Replay buffered events with seq > last_event_seq.
+        let replay = self
+            .inner
+            .event_log
+            .replay_session_events_after_seq(
+                entry.session_id.as_str(),
+                last_event_seq,
+                REPLAY_LIMIT,
+            )
+            .await
+            .unwrap_or_default();
+        let replayed = !replay.is_empty();
+
+        // Acknowledge the resume before replaying.
+        let mut ack = Envelope::new(MessageType::SessionResumed(
+            arcp_core::messages::SessionResumedPayload {
+                session_id: entry.session_id.clone(),
+                resume_token: new_token,
+                replayed_from: last_event_seq,
+                replayed,
+            },
+        ));
+        ack.correlation_id = Some(correlation_id);
+        ack.session_id = Some(entry.session_id.clone());
+        let _ = out.send(ack).await;
+
+        // Forward replayed events on the anti-echo channel (#82); they are
+        // already-persisted copies and already carry the session id.
+        for logged in replay {
+            if let Ok(env) = logged.envelope.try_into_typed() {
+                if fwd.send(env).await.is_err() {
+                    break;
+                }
+            }
+        }
+
+        let mut state = SessionState::new(entry.session_id.clone(), entry.capabilities);
+        state.principal = entry.principal;
+        state.phase = HandshakePhase::Accepted;
+        Some(state)
     }
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1388,20 +1534,45 @@ impl ARCPRuntime {
         correlation_id: MessageId,
         session_id: &SessionId,
         capabilities: &Capabilities,
+        principal: Option<String>,
     ) {
         let lease = self.inner.session_lease_seconds.map(|s| SessionLease {
             expires_at: chrono::Utc::now()
                 + chrono::Duration::seconds(i64::try_from(s).unwrap_or(i64::MAX)),
         });
+        // ARCP v1.1 §6.3: mint a fresh resume token on every welcome and
+        // register it so a later `session.resume` can reattach.
+        let resume_token = self.register_resume_token(session_id, principal, capabilities);
         let mut env = Envelope::new(MessageType::SessionAccepted(SessionAcceptedPayload {
             session_id: session_id.clone(),
             runtime: self.inner.runtime_identity.clone(),
             capabilities: capabilities.clone(),
             lease,
+            resume_token: Some(resume_token),
         }));
         env.correlation_id = Some(correlation_id);
         env.session_id = Some(session_id.clone());
         let _ = out.send(env).await;
+    }
+
+    /// Mint and register a fresh `resume_token` for `session_id`,
+    /// returning the token (ARCP v1.1 §6.3).
+    fn register_resume_token(
+        &self,
+        session_id: &SessionId,
+        principal: Option<String>,
+        capabilities: &Capabilities,
+    ) -> String {
+        let token = format!("rt_{}", MessageId::new());
+        self.inner.resume_registry.insert(
+            token.clone(),
+            ResumeEntry {
+                session_id: session_id.clone(),
+                principal,
+                capabilities: capabilities.clone(),
+            },
+        );
+        token
     }
 
     async fn send_rejected(
