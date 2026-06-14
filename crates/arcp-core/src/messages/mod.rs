@@ -1160,7 +1160,9 @@ mod tests {
             ),
             (
                 MessageType::JobProgress(JobProgressPayload {
-                    percent: None,
+                    current: 0.0,
+                    total: None,
+                    units: None,
                     message: None,
                 }),
                 "job.progress",

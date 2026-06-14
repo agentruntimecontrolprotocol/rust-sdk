@@ -316,15 +316,105 @@ pub struct JobStartedPayload {
     pub description: Option<String>,
 }
 
-/// Payload for `job.progress`.
+/// Payload for `job.progress` — the `progress` event body (ARCP v1.1
+/// §8.2.1): `{ current, total?, units?, message? }`.
+///
+/// `current` MUST be a non-negative number. `total` is OPTIONAL; absent
+/// means the work is indeterminate. When `total` is present, `current`
+/// SHOULD be ≤ `total`. Use [`JobProgressPayload::validate`] to enforce
+/// these invariants before emitting.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JobProgressPayload {
-    /// Percent complete, 0.0 to 100.0.
+    /// Units of work completed so far. MUST be non-negative.
+    pub current: f64,
+    /// Total units of work, if known. Absent means indeterminate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub percent: Option<f64>,
+    pub total: Option<f64>,
+    /// Optional unit label (e.g. `"files"`, `"tokens"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub units: Option<String>,
     /// Optional human-readable message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+impl JobProgressPayload {
+    /// Construct a progress body reporting `current` units done against an
+    /// indeterminate total.
+    #[must_use]
+    pub const fn new(current: f64) -> Self {
+        Self {
+            current,
+            total: None,
+            units: None,
+            message: None,
+        }
+    }
+
+    /// Construct a progress body with a known `total`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::ARCPError::InvalidRequest`] if the values
+    /// violate the §8.2.1 invariants (see [`Self::validate`]).
+    pub fn with_total(current: f64, total: f64) -> Result<Self, crate::error::ARCPError> {
+        let payload = Self {
+            current,
+            total: Some(total),
+            units: None,
+            message: None,
+        };
+        payload.validate()?;
+        Ok(payload)
+    }
+
+    /// Attach a unit label, returning `self` for chaining.
+    #[must_use]
+    pub fn with_units(mut self, units: impl Into<String>) -> Self {
+        self.units = Some(units.into());
+        self
+    }
+
+    /// Attach a human-readable message, returning `self` for chaining.
+    #[must_use]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+
+    /// Validate the §8.2.1 progress invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::ARCPError::InvalidRequest`] if `current` is
+    /// negative or non-finite, if `total` is negative or non-finite, or if
+    /// `total` is present and `current` exceeds it.
+    pub fn validate(&self) -> Result<(), crate::error::ARCPError> {
+        if !self.current.is_finite() || self.current < 0.0 {
+            return Err(crate::error::ARCPError::InvalidRequest {
+                detail: format!(
+                    "job.progress current must be non-negative, got {}",
+                    self.current
+                ),
+            });
+        }
+        if let Some(total) = self.total {
+            if !total.is_finite() || total < 0.0 {
+                return Err(crate::error::ARCPError::InvalidRequest {
+                    detail: format!("job.progress total must be non-negative, got {total}"),
+                });
+            }
+            if self.current > total {
+                return Err(crate::error::ARCPError::InvalidRequest {
+                    detail: format!(
+                        "job.progress current ({}) must not exceed total ({total})",
+                        self.current
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Payload for `job.heartbeat` (RFC §10.3).
@@ -816,4 +906,52 @@ pub struct WorkflowCompletePayload {
     /// Optional final value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<serde_json::Value>,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::float_cmp)]
+mod progress_tests {
+    use super::*;
+
+    #[test]
+    fn progress_serializes_with_current_and_optional_total() {
+        let payload = JobProgressPayload::with_total(47.0, 120.0)
+            .unwrap()
+            .with_units("files")
+            .with_message("indexing");
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["current"], serde_json::json!(47.0));
+        assert_eq!(json["total"], serde_json::json!(120.0));
+        assert_eq!(json["units"], serde_json::json!("files"));
+        assert_eq!(json["message"], serde_json::json!("indexing"));
+        // `percent` is gone from the §8.2.1 body.
+        assert!(json.get("percent").is_none());
+    }
+
+    #[test]
+    fn indeterminate_progress_omits_total() {
+        let payload = JobProgressPayload::new(5.0);
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["current"], serde_json::json!(5.0));
+        assert!(json.get("total").is_none());
+        payload.validate().unwrap();
+    }
+
+    #[test]
+    fn negative_current_is_rejected() {
+        let payload = JobProgressPayload::new(-1.0);
+        assert!(payload.validate().is_err());
+    }
+
+    #[test]
+    fn current_exceeding_total_is_rejected() {
+        let err = JobProgressPayload::with_total(10.0, 5.0).unwrap_err();
+        assert!(err.to_string().contains("must not exceed total"));
+    }
+
+    #[test]
+    fn non_finite_current_is_rejected() {
+        let payload = JobProgressPayload::new(f64::INFINITY);
+        assert!(payload.validate().is_err());
+    }
 }

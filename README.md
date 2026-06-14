@@ -227,7 +227,7 @@ while let Some(env) = transport.recv().await? {
     match env.payload {
         MessageType::Log(p) => println!("[log {:?}] {}", p.level, p.message),
         MessageType::Metric(m) => println!("metric[{}] = {} {}", m.name, m.value, m.unit),
-        MessageType::JobProgress(p) => println!("progress {:?}%", p.percent),
+        MessageType::JobProgress(p) => println!("progress {}/{:?}", p.current, p.total),
         MessageType::JobResultChunk(c) => println!("chunk seq={} more={}", c.chunk_seq, c.more),
         MessageType::JobCompleted(_) | MessageType::JobFailed(_) | MessageType::JobCancelled(_) => break,
         _ => {}

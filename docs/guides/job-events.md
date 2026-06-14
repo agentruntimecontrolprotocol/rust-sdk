@@ -32,7 +32,7 @@ divergence.
 | `tool.result` | `tool_result` | Tool operation result. |
 | `tool.error` | `tool_result` (error form) | Structured tool failure. |
 | `job.started` | `status` (`phase: "started"`) | Job entered the running state. |
-| `job.progress` | `progress` | Optional `percent`/`message` progress update (`JobProgressPayload`). |
+| `job.progress` | `progress` | `current`/`total?`/`units?`/`message?` progress update (`JobProgressPayload`, §8.2.1). |
 | `job.heartbeat` | (SDK extension; not in §8.2) | Liveness signal from a long-running job (`JobHeartbeatPayload`). |
 | `job.result_chunk` | `result_chunk` (ARCP v1.1 §8.4) | One fragment of a streamed final result. |
 | `job.completed` / `job.failed` / `job.cancelled` | Terminal `job.result` / `job.error` (§7.3) | Terminal outcomes. |
