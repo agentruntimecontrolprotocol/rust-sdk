@@ -305,6 +305,13 @@ impl ARCPRuntime {
         // tasks publish here. A dedicated writer task owns the transport
         // send side so we never have two callers contending on it.
         let (out_tx, mut out_rx) = mpsc::channel::<Envelope>(256);
+        // Forwarding channel for `job.subscribe` (ARCP v1.1 §7.6): events
+        // that arrive here are already-published copies fanned out to this
+        // connection from the shared subscription bus. The writer sends them
+        // straight to the transport and MUST NOT re-publish or re-log them —
+        // otherwise the writer's republish would re-match the subscriber's
+        // own filter and amplify into an unbounded echo storm (#82).
+        let (fwd_tx, mut fwd_rx) = mpsc::channel::<Envelope>(256);
         let writer_transport = Arc::clone(&transport);
         let event_log = self.inner.event_log.clone();
         let writer_subs = self.inner.subscriptions.clone();
@@ -321,56 +328,79 @@ impl ARCPRuntime {
         let writer_ack_notify = Arc::clone(&ack_notify);
         let writer_jobs = self.inner.jobs.clone();
         let writer = tokio::spawn(async move {
-            while let Some(mut env) = out_rx.recv().await {
-                // Flow control (§6.5): for countable events, gate on the
-                // sliding window BEFORE persistence / publishing so an
-                // envelope blocked by backpressure isn't logged as
-                // already delivered. Non-countable envelopes (handshake,
-                // heartbeat, ack, control) bypass the gate.
-                let is_countable = env.payload.is_countable_event();
-                if is_countable {
-                    if let Some(window) = ack_window {
-                        loop {
-                            let in_flight = writer_emitted
-                                .load(Ordering::Acquire)
-                                .saturating_sub(writer_last_ack.load(Ordering::Acquire));
-                            if in_flight < window {
-                                break;
+            loop {
+                // Bias toward locally-originated envelopes (`out_rx`) so
+                // session/job lifecycle ordering is preserved; forwarded
+                // observer copies (`fwd_rx`) are delivered as they arrive.
+                // The connection holds the primary `fwd_tx`, so `fwd_rx`
+                // only closes during teardown (when `out_tx` is dropped
+                // too), which the `out_rx` arm observes and exits on.
+                let env = tokio::select! {
+                    biased;
+                    maybe = out_rx.recv() => {
+                        let Some(mut env) = maybe else { break };
+                        // Flow control (§6.5): for countable events, gate on
+                        // the sliding window BEFORE persistence / publishing
+                        // so an envelope blocked by backpressure isn't logged
+                        // as already delivered. Non-countable envelopes
+                        // (handshake, heartbeat, ack, control) bypass the gate.
+                        let is_countable = env.payload.is_countable_event();
+                        if is_countable {
+                            if let Some(window) = ack_window {
+                                loop {
+                                    let in_flight = writer_emitted
+                                        .load(Ordering::Acquire)
+                                        .saturating_sub(writer_last_ack.load(Ordering::Acquire));
+                                    if in_flight < window {
+                                        break;
+                                    }
+                                    // Wait for either a new ack or for the
+                                    // channel to close. run_connection drops
+                                    // out_tx and then notifies us so we can
+                                    // observe the closed channel and exit
+                                    // instead of parking forever (§6.5).
+                                    writer_ack_notify.notified().await;
+                                    if out_rx.is_closed() {
+                                        return;
+                                    }
+                                }
                             }
-                            // Wait for either a new ack or for the
-                            // channel to close. run_connection drops
-                            // out_tx and then notifies us so we can
-                            // observe the closed channel and exit
-                            // instead of parking forever (§6.5).
-                            writer_ack_notify.notified().await;
-                            if out_rx.is_closed() {
-                                return;
+                            // Stamp the session-scoped sequence number (§6.5 /
+                            // §6.6). For job-scoped events, also bump the job's
+                            // high-water mark so session.list_jobs and
+                            // job.subscribed report the actual last value the
+                            // subscriber can ack from.
+                            let seq = writer_emitted.fetch_add(1, Ordering::AcqRel) + 1;
+                            env.event_seq = Some(seq);
+                            if let Some(job_id) = env.job_id.as_ref() {
+                                writer_jobs.record_event_seq(job_id, seq);
                             }
                         }
+                        if let Err(e) = event_log.append(&env).await {
+                            tracing::warn!(error = %e, "failed to persist outbound envelope");
+                        }
+                        // Publish outbound envelopes too so subscribers see
+                        // job.* / tool.* / stream.* events that originate on
+                        // the server side (ARCP v1.1 §7.6). Skip subscribe.event
+                        // itself so the wrapper isn't re-broadcast, which would
+                        // cause an echo storm whenever a filter matches
+                        // subscribe.event.
+                        if !matches!(env.payload, MessageType::SubscribeEvent(_)) {
+                            let publish_env = redact_for_subscribers(&env);
+                            let _ = writer_subs.publish(&publish_env);
+                        }
+                        env
                     }
-                    // Stamp the session-scoped sequence number (§6.5 /
-                    // §6.6). For job-scoped events, also bump the
-                    // job's high-water mark so session.list_jobs and
-                    // job.subscribed report the actual last value the
-                    // subscriber can ack from.
-                    let seq = writer_emitted.fetch_add(1, Ordering::AcqRel) + 1;
-                    env.event_seq = Some(seq);
-                    if let Some(job_id) = env.job_id.as_ref() {
-                        writer_jobs.record_event_seq(job_id, seq);
+                    // Forwarded `job.subscribe` copies (§7.6). These were
+                    // already persisted and published by the originating
+                    // connection, so they are sent verbatim to the transport
+                    // WITHOUT re-logging or re-publishing — breaking the
+                    // amplification loop (#82).
+                    maybe = fwd_rx.recv() => {
+                        let Some(env) = maybe else { break };
+                        env
                     }
-                }
-                if let Err(e) = event_log.append(&env).await {
-                    tracing::warn!(error = %e, "failed to persist outbound envelope");
-                }
-                // Publish outbound envelopes too so subscribers see
-                // job.* / tool.* / stream.* events that originate on the
-                // server side (ARCP v1.1 §7.6). Skip subscribe.event itself
-                // so the wrapper isn't re-broadcast, which would cause an
-                // echo storm whenever a filter matches subscribe.event.
-                if !matches!(env.payload, MessageType::SubscribeEvent(_)) {
-                    let publish_env = redact_for_subscribers(&env);
-                    let _ = writer_subs.publish(&publish_env);
-                }
+                };
                 if let Err(e) = writer_transport.send(env).await {
                     tracing::warn!(error = %e, "transport send failed; closing writer");
                     break;
@@ -546,6 +576,7 @@ impl ARCPRuntime {
                     if let Some(s) = state.as_ref() {
                         Self::handle_job_subscribe(
                             &out_tx,
+                            &fwd_tx,
                             &self.inner.subscriptions,
                             &self.inner.jobs,
                             &self.inner.session_principals,
@@ -631,6 +662,9 @@ impl ARCPRuntime {
         }
         connection_job_subs.clear();
         drop(out_tx);
+        // Drop the forwarding channel too so the writer's select loop
+        // observes both channels closed and exits.
+        drop(fwd_tx);
         // Wake the writer if it's currently parked on the ack window so
         // it can observe the closed channel and exit.
         ack_notify.notify_waiters();
@@ -1248,6 +1282,7 @@ impl ARCPRuntime {
     #[allow(clippy::too_many_arguments)]
     async fn handle_job_subscribe(
         out: &mpsc::Sender<Envelope>,
+        fwd: &mpsc::Sender<Envelope>,
         manager: &SubscriptionManager,
         jobs: &JobRegistry,
         session_principals: &DashMap<SessionId, Option<String>>,
@@ -1330,7 +1365,13 @@ impl ARCPRuntime {
         // client-side parsers route correctly. The originating session's
         // own writer is responsible for the submitter's copy; here we
         // only fan out a clone to the subscriber.
-        let out_clone = out.clone();
+        //
+        // Forwarded copies are sent on the dedicated forwarding channel
+        // (`fwd`), NOT the main outbound channel. The writer delivers them
+        // verbatim without re-publishing to the subscription bus, so a
+        // forwarded `job.completed` cannot re-match this filter and
+        // amplify into an echo storm (#82, §7.6).
+        let fwd_clone = fwd.clone();
         let subscriber_session_clone = subscriber_session;
         let job_id_clone = job_id.clone();
         let connection_job_subs_clone = Arc::clone(connection_job_subs);
@@ -1343,7 +1384,7 @@ impl ARCPRuntime {
                     continue;
                 }
                 env.session_id = Some(subscriber_session_clone.clone());
-                if out_clone.send(env).await.is_err() {
+                if fwd_clone.send(env).await.is_err() {
                     break;
                 }
             }

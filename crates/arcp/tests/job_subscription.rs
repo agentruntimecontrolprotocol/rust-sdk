@@ -153,6 +153,82 @@ async fn cross_session_subscribe_receives_terminal_event() {
     assert!(got_completed, "observer did not see job.completed forward");
 }
 
+/// Regression test for #82 (ARCP v1.1 §7.6): a cross-session
+/// `job.subscribe` to a job that emits one terminal event must deliver
+/// exactly one copy of that event — not an amplified echo storm — and the
+/// event-log row count must stay bounded (no per-loop growth).
+#[tokio::test]
+async fn cross_session_subscribe_delivers_single_terminal_event() {
+    let runtime = ARCPRuntime::builder()
+        .with_authenticator(Box::new(
+            BearerAuthenticator::new().with_token("token-A", "shared-principal"),
+        ))
+        .with_tools(
+            ToolRegistryBuilder::new()
+                .with(Arc::new(SlowEchoTool))
+                .build(),
+        )
+        .build()
+        .await
+        .expect("build");
+
+    let (submitter, sub_session) = open_session(&runtime, "submitter", "token-A").await;
+    let (observer, obs_session) = open_session(&runtime, "observer", "token-A").await;
+
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        "slow-echo",
+        serde_json::json!({"hello": "world"}),
+    )));
+    invoke.session_id = Some(sub_session.clone());
+    submitter.send(invoke).await.expect("send invoke");
+    let accepted = submitter.recv().await.expect("recv").expect("envelope");
+    let MessageType::JobAccepted(accepted) = accepted.payload else {
+        panic!("expected job.accepted");
+    };
+    let job_id = accepted.job_id;
+
+    let mut sub = Envelope::new(MessageType::JobSubscribe(JobSubscribePayload {
+        job_id: job_id.clone(),
+        from_event_seq: None,
+        history: false,
+    }));
+    sub.session_id = Some(obs_session.clone());
+    observer.send(sub).await.expect("send subscribe");
+
+    // Drain job.subscribed ack.
+    let ack = observer.recv().await.expect("recv").expect("envelope");
+    assert!(matches!(ack.payload, MessageType::JobSubscribed(_)));
+
+    // Count job.completed copies delivered to the observer. Before the
+    // #82 fix this would balloon (the original probe capped at 51).
+    let mut completed_count = 0_u32;
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(300), observer.recv()).await {
+            Ok(Ok(Some(env))) => {
+                if let MessageType::JobCompleted(_) = env.payload {
+                    completed_count += 1;
+                    assert_eq!(env.session_id.as_ref(), Some(&obs_session));
+                }
+            }
+            _ => break,
+        }
+    }
+    assert_eq!(
+        completed_count, 1,
+        "observer must receive exactly one job.completed, got {completed_count}"
+    );
+
+    // The event log must not have grown per forwarder loop. One submitted
+    // slow-echo job emits a small, fixed number of envelopes across both
+    // connections; assert a generous-but-bounded ceiling.
+    let log_rows = runtime.event_log().count().await.expect("count");
+    assert!(
+        log_rows < 40,
+        "event log row count should be bounded, got {log_rows}"
+    );
+}
+
 #[tokio::test]
 async fn job_subscribe_for_unknown_job_returns_not_found_nack() {
     let runtime = ARCPRuntime::builder()
