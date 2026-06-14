@@ -295,6 +295,50 @@ impl LeaseRequest {
             && self.extra.is_empty()
     }
 
+    /// Validate the lease request at submission time against `now`
+    /// (ARCP v1.1 §9.5).
+    ///
+    /// §9.5 requires `expires_at` to be UTC (`Z` suffix) and strictly in
+    /// the future at submission; past or equal-to-now values are rejected
+    /// with `INVALID_REQUEST`. The UTC invariant is enforced at the
+    /// `DateTime<Utc>` type level; this method covers the future-ness
+    /// check. Callers should invoke it before emitting `job.accepted`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ARCPError::InvalidRequest`] when `expires_at` is set and
+    /// not strictly greater than `now`.
+    pub fn validate_at(&self, now: DateTime<Utc>) -> Result<(), crate::error::ARCPError> {
+        if let Some(expires_at) = self.expires_at {
+            if expires_at <= now {
+                return Err(crate::error::ARCPError::InvalidRequest {
+                    detail: format!(
+                        "lease.expires_at MUST be in the future at submission time \
+                         (ARCP v1.1 §9.5): expires_at={expires_at} now={now}"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Convenience wrapper around [`Self::validate_at`] using
+    /// [`chrono::Utc::now`].
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::validate_at`].
+    pub fn validate(&self) -> Result<(), crate::error::ARCPError> {
+        self.validate_at(Utc::now())
+    }
+
+    /// True when the lease carries an `expires_at` that is at or before
+    /// `now` (ARCP v1.1 §9.5). Absent `expires_at` never expires.
+    #[must_use]
+    pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
+        self.expires_at.is_some_and(|expires_at| now >= expires_at)
+    }
+
     /// §9.4 subset check across all known lease capabilities.
     #[must_use]
     pub fn subset_violation(
@@ -540,6 +584,45 @@ mod lease_request_tests {
             parent.subset_violation(&child, &HashMap::new()),
             Some(LeaseSubsetViolation::ExpiresAtBeyondParent)
         );
+    }
+
+    #[test]
+    fn validate_at_rejects_past_and_equal_expires_at() {
+        let now = Utc::now();
+        // Past.
+        let past = LeaseRequest {
+            expires_at: Some(now - chrono::Duration::seconds(1)),
+            ..LeaseRequest::default()
+        };
+        assert!(past.validate_at(now).is_err());
+        // Exactly now (not strictly future).
+        let equal = LeaseRequest {
+            expires_at: Some(now),
+            ..LeaseRequest::default()
+        };
+        assert!(equal.validate_at(now).is_err());
+        // Future is accepted.
+        let future = LeaseRequest {
+            expires_at: Some(now + chrono::Duration::seconds(1)),
+            ..LeaseRequest::default()
+        };
+        assert!(future.validate_at(now).is_ok());
+        // Absent expires_at is always valid.
+        assert!(LeaseRequest::default().validate_at(now).is_ok());
+    }
+
+    #[test]
+    fn is_expired_at_tracks_the_deadline() {
+        let now = Utc::now();
+        let lease = LeaseRequest {
+            expires_at: Some(now),
+            ..LeaseRequest::default()
+        };
+        assert!(lease.is_expired_at(now));
+        assert!(lease.is_expired_at(now + chrono::Duration::seconds(1)));
+        assert!(!lease.is_expired_at(now - chrono::Duration::seconds(1)));
+        // No expiry never expires.
+        assert!(!LeaseRequest::default().is_expired_at(now));
     }
 }
 

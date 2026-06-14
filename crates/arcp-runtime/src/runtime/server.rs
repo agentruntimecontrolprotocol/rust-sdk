@@ -962,6 +962,26 @@ impl ARCPRuntime {
             }
         };
         let lease = effective_lease(&payload);
+
+        // ARCP v1.1 §9.5: a lease `expires_at` MUST be UTC and strictly in
+        // the future at submission. Past / equal-to-now values are rejected
+        // with INVALID_REQUEST before any job.accepted is emitted.
+        if let Some(lease_ref) = lease.as_ref() {
+            if let Err(e) = lease_ref.validate() {
+                let mut err = Envelope::new(MessageType::JobFailed(JobFailedPayload {
+                    code: e.code(),
+                    retryable: Some(e.retryable()),
+                    message: e.to_string(),
+                    details: None,
+                }));
+                err.correlation_id = Some(correlation_id);
+                err.session_id = Some(session_id);
+                err.job_id = Some(job_id);
+                let _ = out.send(err).await;
+                return;
+            }
+        }
+
         let defer_accepted = self.inner.credential_provisioner.is_some() && lease.is_some();
         let accepted_sent = if defer_accepted {
             false
@@ -1089,6 +1109,11 @@ impl ARCPRuntime {
         let provisioner_clone = self.inner.credential_provisioner.clone();
         let credential_ledger_clone = self.inner.credential_ledger.clone();
         let cancel_for_task = cancel;
+        // ARCP v1.1 §9.5: capture the lease deadline (if any) so the task
+        // can race the handler against it and proactively surface
+        // LEASE_EXPIRED. `DateTime<Utc>` is `Copy`, so this does not move
+        // `lease` (which is consumed by the ToolContext below).
+        let lease_expires_at = lease.as_ref().and_then(|l| l.expires_at);
         // ARCP v1.1 §9.6: seed the per-job budget tracker from the
         // `cost_budget` field on `tool.invoke`. Absent / empty means
         // budgeting is disabled for this job.
@@ -1138,8 +1163,23 @@ impl ARCPRuntime {
                 lease,
             };
 
+            // §9.5: a future that resolves when the lease deadline passes.
+            // Absent `expires_at` parks forever so the arm never fires.
+            let lease_expiry_future = async move {
+                match lease_expires_at {
+                    Some(expires_at) => {
+                        let remaining = expires_at - chrono::Utc::now();
+                        let delay = remaining.to_std().unwrap_or(std::time::Duration::ZERO);
+                        tokio::time::sleep(delay).await;
+                        expires_at
+                    }
+                    None => std::future::pending::<chrono::DateTime<chrono::Utc>>().await,
+                }
+            };
+
             let outcome = tokio::select! {
                 () = cancel_for_task.cancelled() => Outcome::Cancelled("cancellation token fired".into()),
+                expires_at = lease_expiry_future => Outcome::LeaseExpired { expires_at },
                 result = handler.invoke(payload.arguments, ctx) => match result {
                     Ok(value) => Outcome::Completed(value),
                     Err(ARCPError::Cancelled { reason }) => Outcome::Cancelled(reason),
@@ -1172,6 +1212,22 @@ impl ARCPRuntime {
                     jobs_clone.set_state(&job_id, JobState::Cancelled);
                     MessageType::JobCancelled(JobCancelledPayload {
                         reason: Some(reason),
+                    })
+                }
+                Outcome::LeaseExpired { expires_at } => {
+                    // ARCP v1.1 §9.5: at or after expires_at the runtime MUST
+                    // surface LEASE_EXPIRED with retryable:false; §9.5 also
+                    // permits proactive termination of jobs whose leases have
+                    // expired. Renewal is NOT supported.
+                    jobs_clone.set_state(&job_id, JobState::Failed);
+                    MessageType::JobFailed(JobFailedPayload {
+                        code: ErrorCode::LeaseExpired,
+                        retryable: Some(false),
+                        message: format!(
+                            "lease expired at {expires_at} (ARCP v1.1 §9.5); renewal is NOT \
+                             supported — resubmit with a fresh lease"
+                        ),
+                        details: None,
                     })
                 }
             };
@@ -1665,6 +1721,11 @@ enum Outcome {
     Completed(serde_json::Value),
     Failed(ARCPError),
     Cancelled(String),
+    /// ARCP v1.1 §9.5: the lease's `expires_at` was reached while the job
+    /// was still active.
+    LeaseExpired {
+        expires_at: chrono::DateTime<chrono::Utc>,
+    },
 }
 
 /// Upper bound on the number of buffered events replayed for one
