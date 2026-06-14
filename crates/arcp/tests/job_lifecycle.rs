@@ -141,7 +141,7 @@ async fn failing_tool_surfaces_as_job_failed() {
 }
 
 #[tokio::test]
-async fn unknown_tool_surfaces_as_not_found() {
+async fn unknown_tool_surfaces_as_agent_not_available() {
     let client = spawn_with_tools().await;
     let session = client
         .open()
@@ -162,10 +162,10 @@ async fn unknown_tool_surfaces_as_not_found() {
         .await
         .expect("invoke");
     let err = job.join().await.expect_err("must fail");
+    // ARCP v1.1 §12: an unregistered agent yields AGENT_NOT_AVAILABLE,
+    // not the generic NOT_FOUND.
     assert!(
-        err.to_string().contains("not registered")
-            || err.to_string().contains("NOT_FOUND")
-            || err.to_string().contains("not_found"),
-        "got: {err}"
+        err.to_string().contains("AGENT_NOT_AVAILABLE"),
+        "expected AGENT_NOT_AVAILABLE, got: {err}"
     );
 }

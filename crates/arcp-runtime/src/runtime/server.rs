@@ -781,8 +781,10 @@ impl ARCPRuntime {
                     let _ = out.send(accepted).await;
                     return;
                 }
+                // ARCP v1.1 §7.2 / §12: a reused idempotency key with
+                // conflicting parameters returns DUPLICATE_KEY (non-retryable).
                 let mut err = Envelope::new(MessageType::JobFailed(JobFailedPayload {
-                    code: ErrorCode::FailedPrecondition,
+                    code: ErrorCode::DuplicateKey,
                     retryable: Some(false),
                     message: format!(
                         "idempotency key {} already bound to a different command intent",
@@ -857,10 +859,13 @@ impl ARCPRuntime {
         }
 
         let Some(handler) = self.inner.tools.get(&agent_ref.name) else {
+            // ARCP v1.1 §12: an unregistered agent name is AGENT_NOT_AVAILABLE,
+            // distinct from the generic NOT_FOUND and from the
+            // version-mismatch sibling AGENT_VERSION_NOT_AVAILABLE.
             let mut err = Envelope::new(MessageType::JobFailed(JobFailedPayload {
-                code: ErrorCode::NotFound,
+                code: ErrorCode::AgentNotAvailable,
                 retryable: Some(false),
-                message: format!("tool not registered: {}", agent_ref.name),
+                message: format!("agent not available: {}", agent_ref.name),
                 details: None,
             }));
             err.correlation_id = Some(correlation_id);

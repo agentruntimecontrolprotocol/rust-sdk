@@ -40,18 +40,38 @@ pub enum ErrorCode {
     /// `UNKNOWN`
     #[serde(rename = "UNKNOWN")]
     Unknown,
-    /// `INVALID_ARGUMENT`
+    /// `INVALID_ARGUMENT` — SDK-extension gRPC-style code. Prefer
+    /// [`Self::InvalidRequest`] for the §12 wire-level rejection.
     #[serde(rename = "INVALID_ARGUMENT")]
     InvalidArgument,
-    /// `DEADLINE_EXCEEDED`
+    /// `INVALID_REQUEST` — malformed envelope or schema violation
+    /// (ARCP v1.1 §12).
+    #[serde(rename = "INVALID_REQUEST")]
+    InvalidRequest,
+    /// `DEADLINE_EXCEEDED` — SDK-extension gRPC-style code. Prefer
+    /// [`Self::Timeout`] for the §12 wire-level deadline error.
     #[serde(rename = "DEADLINE_EXCEEDED")]
     DeadlineExceeded,
-    /// `NOT_FOUND`
+    /// `TIMEOUT` — job exceeded `max_runtime_sec` (ARCP v1.1 §12).
+    #[serde(rename = "TIMEOUT")]
+    Timeout,
+    /// `NOT_FOUND` — SDK-extension gRPC-style code. Prefer
+    /// [`Self::JobNotFound`] / [`Self::AgentNotAvailable`] when the missing
+    /// entity has a §12-defined code.
     #[serde(rename = "NOT_FOUND")]
     NotFound,
-    /// `ALREADY_EXISTS`
+    /// `JOB_NOT_FOUND` — referenced `job_id` does not exist or is not visible
+    /// to the requesting principal (ARCP v1.1 §12).
+    #[serde(rename = "JOB_NOT_FOUND")]
+    JobNotFound,
+    /// `ALREADY_EXISTS` — SDK-extension gRPC-style code. Prefer
+    /// [`Self::DuplicateKey`] for the §12 wire-level idempotency conflict.
     #[serde(rename = "ALREADY_EXISTS")]
     AlreadyExists,
+    /// `DUPLICATE_KEY` — `idempotency_key` reuse with conflicting parameters
+    /// (ARCP v1.1 §7.2 / §12).
+    #[serde(rename = "DUPLICATE_KEY")]
+    DuplicateKey,
     /// `PERMISSION_DENIED`
     #[serde(rename = "PERMISSION_DENIED")]
     PermissionDenied,
@@ -70,8 +90,9 @@ pub enum ErrorCode {
     /// `UNIMPLEMENTED`
     #[serde(rename = "UNIMPLEMENTED")]
     Unimplemented,
-    /// `INTERNAL`
-    #[serde(rename = "INTERNAL")]
+    /// `INTERNAL` — unrecoverable runtime fault. Always retryable per
+    /// ARCP v1.1 §12 (`INTERNAL_ERROR`).
+    #[serde(rename = "INTERNAL", alias = "INTERNAL_ERROR")]
     Internal,
     /// `UNAVAILABLE`
     #[serde(rename = "UNAVAILABLE")]
@@ -85,6 +106,10 @@ pub enum ErrorCode {
     /// `HEARTBEAT_LOST` (RFC §10.3)
     #[serde(rename = "HEARTBEAT_LOST")]
     HeartbeatLost,
+    /// `RESUME_WINDOW_EXPIRED` — resume attempted after the buffer window
+    /// closed (ARCP v1.1 §6.3 / §12).
+    #[serde(rename = "RESUME_WINDOW_EXPIRED")]
+    ResumeWindowExpired,
     /// `LEASE_EXPIRED` (RFC §15.5)
     #[serde(rename = "LEASE_EXPIRED")]
     LeaseExpired,
@@ -100,6 +125,10 @@ pub enum ErrorCode {
     /// `LEASE_SUBSET_VIOLATION` (ARCP v1.1 §9.4)
     #[serde(rename = "LEASE_SUBSET_VIOLATION")]
     LeaseSubsetViolation,
+    /// `AGENT_NOT_AVAILABLE` — requested `agent` name is not registered
+    /// (ARCP v1.1 §7.5 / §12).
+    #[serde(rename = "AGENT_NOT_AVAILABLE")]
+    AgentNotAvailable,
     /// `AGENT_VERSION_NOT_AVAILABLE` (ARCP v1.1 §12; §7.5)
     #[serde(rename = "AGENT_VERSION_NOT_AVAILABLE")]
     AgentVersionNotAvailable,
@@ -132,9 +161,13 @@ impl ErrorCode {
             Self::Cancelled => "CANCELLED",
             Self::Unknown => "UNKNOWN",
             Self::InvalidArgument => "INVALID_ARGUMENT",
+            Self::InvalidRequest => "INVALID_REQUEST",
             Self::DeadlineExceeded => "DEADLINE_EXCEEDED",
+            Self::Timeout => "TIMEOUT",
             Self::NotFound => "NOT_FOUND",
+            Self::JobNotFound => "JOB_NOT_FOUND",
             Self::AlreadyExists => "ALREADY_EXISTS",
+            Self::DuplicateKey => "DUPLICATE_KEY",
             Self::PermissionDenied => "PERMISSION_DENIED",
             Self::ResourceExhausted => "RESOURCE_EXHAUSTED",
             Self::FailedPrecondition => "FAILED_PRECONDITION",
@@ -146,11 +179,13 @@ impl ErrorCode {
             Self::DataLoss => "DATA_LOSS",
             Self::Unauthenticated => "UNAUTHENTICATED",
             Self::HeartbeatLost => "HEARTBEAT_LOST",
+            Self::ResumeWindowExpired => "RESUME_WINDOW_EXPIRED",
             Self::LeaseExpired => "LEASE_EXPIRED",
             Self::LeaseRevoked => "LEASE_REVOKED",
             Self::BackpressureOverflow => "BACKPRESSURE_OVERFLOW",
             Self::BudgetExhausted => "BUDGET_EXHAUSTED",
             Self::LeaseSubsetViolation => "LEASE_SUBSET_VIOLATION",
+            Self::AgentNotAvailable => "AGENT_NOT_AVAILABLE",
             Self::AgentVersionNotAvailable => "AGENT_VERSION_NOT_AVAILABLE",
         }
     }
@@ -179,21 +214,38 @@ pub enum ARCPError {
         reason: String,
     },
 
-    /// Malformed or invalid argument.
+    /// Malformed or invalid argument (gRPC-style code; prefer
+    /// [`Self::InvalidRequest`] for ARCP v1.1 §12 wire surfaces).
     #[error("invalid argument: {detail}")]
     InvalidArgument {
         /// Description of the violated constraint.
         detail: String,
     },
 
-    /// Operation timed out before completion.
+    /// Malformed envelope or schema violation (ARCP v1.1 §12).
+    #[error("invalid request: {detail}")]
+    InvalidRequest {
+        /// Description of the violated constraint.
+        detail: String,
+    },
+
+    /// Operation timed out before completion (gRPC-style code; prefer
+    /// [`Self::Timeout`] for ARCP v1.1 §12 job `max_runtime_sec` deadlines).
     #[error("operation timed out: {detail}")]
     DeadlineExceeded {
         /// Description of what timed out.
         detail: String,
     },
 
-    /// Referenced entity does not exist.
+    /// Job exceeded `max_runtime_sec` (ARCP v1.1 §12).
+    #[error("job timed out: {detail}")]
+    Timeout {
+        /// Description of the timeout context.
+        detail: String,
+    },
+
+    /// Referenced entity does not exist (gRPC-style code; prefer
+    /// [`Self::JobNotFound`] / [`Self::AgentNotAvailable`] for §12 codes).
     #[error("not found: {kind} (id={id})")]
     NotFound {
         /// Kind of entity (e.g. `"job"`, `"artifact"`).
@@ -202,13 +254,41 @@ pub enum ARCPError {
         id: String,
     },
 
-    /// Entity creation conflicted with an existing entity.
+    /// Referenced `job_id` does not exist or is not visible to the requesting
+    /// principal (ARCP v1.1 §12).
+    #[error("job not found: job_id={job_id}")]
+    JobNotFound {
+        /// The unresolvable `job_id`.
+        job_id: String,
+    },
+
+    /// Entity creation conflicted with an existing entity (gRPC-style code;
+    /// prefer [`Self::DuplicateKey`] for §12 idempotency conflicts).
     #[error("already exists: {kind} (id={id})")]
     AlreadyExists {
         /// Kind of entity that conflicted.
         kind: &'static str,
         /// Lookup key as a string.
         id: String,
+    },
+
+    /// `idempotency_key` reuse with conflicting parameters
+    /// (ARCP v1.1 §7.2 / §12).
+    #[error("duplicate idempotency key: {idempotency_key}")]
+    DuplicateKey {
+        /// The conflicting key.
+        idempotency_key: String,
+        /// Free-form description of the conflict (e.g. which field disagreed
+        /// with the original submission).
+        detail: String,
+    },
+
+    /// Resume attempted after the buffer window closed
+    /// (ARCP v1.1 §6.3 / §12).
+    #[error("resume window expired: last_event_seq={last_event_seq}")]
+    ResumeWindowExpired {
+        /// The `last_event_seq` the client presented.
+        last_event_seq: u64,
     },
 
     /// Caller lacks the required permission or lease.
@@ -329,6 +409,14 @@ pub enum ARCPError {
         detail: String,
     },
 
+    /// `job.submit` named an `agent` the runtime does not have registered at
+    /// all (ARCP v1.1 §7.5 / §12).
+    #[error("agent not available: {agent}")]
+    AgentNotAvailable {
+        /// Agent name.
+        agent: String,
+    },
+
     /// `job.submit` named an `agent@version` the runtime does not have (ARCP v1.1 §7.5).
     #[error("agent version not available: {agent}@{version}")]
     AgentVersionNotAvailable {
@@ -370,9 +458,14 @@ impl ARCPError {
         match self {
             Self::Cancelled { .. } => ErrorCode::Cancelled,
             Self::InvalidArgument { .. } | Self::Id(_) => ErrorCode::InvalidArgument,
+            Self::InvalidRequest { .. } => ErrorCode::InvalidRequest,
             Self::DeadlineExceeded { .. } => ErrorCode::DeadlineExceeded,
+            Self::Timeout { .. } => ErrorCode::Timeout,
             Self::NotFound { .. } => ErrorCode::NotFound,
+            Self::JobNotFound { .. } => ErrorCode::JobNotFound,
             Self::AlreadyExists { .. } => ErrorCode::AlreadyExists,
+            Self::DuplicateKey { .. } => ErrorCode::DuplicateKey,
+            Self::ResumeWindowExpired { .. } => ErrorCode::ResumeWindowExpired,
             Self::PermissionDenied { .. } => ErrorCode::PermissionDenied,
             Self::ResourceExhausted { .. } => ErrorCode::ResourceExhausted,
             Self::FailedPrecondition { .. } => ErrorCode::FailedPrecondition,
@@ -389,6 +482,7 @@ impl ARCPError {
             Self::BackpressureOverflow { .. } => ErrorCode::BackpressureOverflow,
             Self::BudgetExhausted { .. } => ErrorCode::BudgetExhausted,
             Self::LeaseSubsetViolation { .. } => ErrorCode::LeaseSubsetViolation,
+            Self::AgentNotAvailable { .. } => ErrorCode::AgentNotAvailable,
             Self::AgentVersionNotAvailable { .. } => ErrorCode::AgentVersionNotAvailable,
             Self::Unknown { .. } | Self::Serialization(_) => ErrorCode::Unknown,
         }
@@ -417,9 +511,13 @@ mod tests {
             ErrorCode::Ok,
             ErrorCode::Cancelled,
             ErrorCode::InvalidArgument,
+            ErrorCode::InvalidRequest,
             ErrorCode::DeadlineExceeded,
+            ErrorCode::Timeout,
             ErrorCode::NotFound,
+            ErrorCode::JobNotFound,
             ErrorCode::AlreadyExists,
+            ErrorCode::DuplicateKey,
             ErrorCode::PermissionDenied,
             ErrorCode::ResourceExhausted,
             ErrorCode::FailedPrecondition,
@@ -431,11 +529,13 @@ mod tests {
             ErrorCode::DataLoss,
             ErrorCode::Unauthenticated,
             ErrorCode::HeartbeatLost,
+            ErrorCode::ResumeWindowExpired,
             ErrorCode::LeaseExpired,
             ErrorCode::LeaseRevoked,
             ErrorCode::BackpressureOverflow,
             ErrorCode::BudgetExhausted,
             ErrorCode::LeaseSubsetViolation,
+            ErrorCode::AgentNotAvailable,
             ErrorCode::AgentVersionNotAvailable,
             ErrorCode::Unknown,
         ] {
@@ -450,6 +550,77 @@ mod tests {
     fn rate_limited_alias_decodes_to_resource_exhausted() {
         let code: ErrorCode = serde_json::from_str("\"RATE_LIMITED\"").expect("alias");
         assert_eq!(code, ErrorCode::ResourceExhausted);
+    }
+
+    #[test]
+    fn internal_error_alias_decodes_to_internal() {
+        let code: ErrorCode = serde_json::from_str("\"INTERNAL_ERROR\"").expect("alias");
+        assert_eq!(code, ErrorCode::Internal);
+    }
+
+    #[test]
+    fn section_12_wire_codes_round_trip() {
+        for (code, wire) in [
+            (ErrorCode::DuplicateKey, "DUPLICATE_KEY"),
+            (ErrorCode::AgentNotAvailable, "AGENT_NOT_AVAILABLE"),
+            (ErrorCode::JobNotFound, "JOB_NOT_FOUND"),
+            (ErrorCode::Timeout, "TIMEOUT"),
+            (ErrorCode::ResumeWindowExpired, "RESUME_WINDOW_EXPIRED"),
+            (ErrorCode::InvalidRequest, "INVALID_REQUEST"),
+        ] {
+            assert_eq!(code.as_str(), wire);
+            assert_eq!(
+                serde_json::to_string(&code).expect("serialize"),
+                format!("\"{wire}\"")
+            );
+            let back: ErrorCode =
+                serde_json::from_str(&format!("\"{wire}\"")).expect("deserialize");
+            assert_eq!(code, back);
+        }
+    }
+
+    #[test]
+    fn section_12_arcp_errors_map_to_canonical_codes() {
+        assert_eq!(
+            ARCPError::DuplicateKey {
+                idempotency_key: "k1".into(),
+                detail: "args differ".into(),
+            }
+            .code(),
+            ErrorCode::DuplicateKey
+        );
+        assert_eq!(
+            ARCPError::AgentNotAvailable {
+                agent: "summarizer".into(),
+            }
+            .code(),
+            ErrorCode::AgentNotAvailable
+        );
+        assert_eq!(
+            ARCPError::JobNotFound {
+                job_id: "job-1".into(),
+            }
+            .code(),
+            ErrorCode::JobNotFound
+        );
+        assert_eq!(
+            ARCPError::Timeout {
+                detail: "max_runtime_sec".into(),
+            }
+            .code(),
+            ErrorCode::Timeout
+        );
+        assert_eq!(
+            ARCPError::ResumeWindowExpired { last_event_seq: 7 }.code(),
+            ErrorCode::ResumeWindowExpired
+        );
+        assert_eq!(
+            ARCPError::InvalidRequest {
+                detail: "missing field".into(),
+            }
+            .code(),
+            ErrorCode::InvalidRequest
+        );
     }
 
     #[test]
