@@ -199,7 +199,7 @@ impl RuntimeBuilder {
             artifacts: ArtifactStore::new(),
             subscriptions: SubscriptionManager::new(),
             jobs: JobRegistry::new(),
-            session_principals: DashMap::new(),
+            session_principals: Arc::new(DashMap::new()),
             credential_provisioner: self.credential_provisioner,
             credential_ledger: CredentialLedger::new(),
             idempotency_index: DashMap::new(),
@@ -263,9 +263,11 @@ struct RuntimeInner {
     /// `job.subscribe` (ARCP v1.1 §7.6) from a different session can
     /// observe jobs submitted elsewhere.
     jobs: JobRegistry,
-    /// Per-session authenticated principal. Used by `job.subscribe`
-    /// authorization (default policy: same-principal as the submitter).
-    session_principals: DashMap<SessionId, Option<String>>,
+    /// Per-session authenticated principal. Used by `subscribe` /
+    /// `job.subscribe` authorization (default policy: same-principal as the
+    /// submitter). Shared (`Arc`) so per-subscription forwarder tasks can
+    /// resolve a publishing session's principal at delivery time.
+    session_principals: Arc<DashMap<SessionId, Option<String>>>,
     /// Optional provisioner for lease-bound upstream credentials.
     credential_provisioner: Option<Arc<dyn CredentialProvisioner>>,
     /// Runtime ledger of outstanding credential ids.
@@ -647,9 +649,11 @@ impl ARCPRuntime {
                         Self::handle_subscribe(
                             &out_tx,
                             &self.inner.subscriptions,
+                            &self.inner.session_principals,
                             &connection_subs,
                             envelope.id.clone(),
                             s.session_id.clone(),
+                            s.principal.clone(),
                             payload,
                         )
                         .await;
@@ -1319,17 +1323,49 @@ impl ARCPRuntime {
         let _ = out.send(env).await;
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_subscribe(
         out: &mpsc::Sender<Envelope>,
         manager: &SubscriptionManager,
+        session_principals: &Arc<DashMap<SessionId, Option<String>>>,
         connection_subs: &Arc<DashMap<SubscriptionId, JoinHandle<()>>>,
         correlation_id: MessageId,
         session_id: SessionId,
+        principal: Option<String>,
         payload: SubscribePayload,
     ) {
         let SubscribePayload { filter, since: _ } = payload;
-        // PLAN.md §A4.10 reserves richer authorisation; for v0.1 we accept
-        // any filter from an authenticated session.
+        // ARCP v1.1 §14: generic subscriptions MUST default to
+        // "same principal only" and MUST NOT let an authenticated session
+        // observe another principal's events without explicit policy.
+        //
+        // An explicit session-scoped filter may only name sessions owned by
+        // the caller's own principal (the caller's session always
+        // qualifies). Any other principal's session is rejected up front.
+        for named in &filter.session_id {
+            if *named == session_id {
+                continue;
+            }
+            let named_principal = session_principals
+                .get(named)
+                .and_then(|p| p.value().clone());
+            let permitted = match (&principal, &named_principal) {
+                (Some(caller), Some(owner)) => caller == owner,
+                _ => false,
+            };
+            if !permitted {
+                let mut err = Envelope::new(MessageType::Nack(NackPayload {
+                    code: ErrorCode::PermissionDenied,
+                    message: "subscription filter names a session owned by another principal"
+                        .into(),
+                    details: None,
+                }));
+                err.correlation_id = Some(correlation_id);
+                err.session_id = Some(session_id);
+                let _ = out.send(err).await;
+                return;
+            }
+        }
         let (subscription_id, mut rx) = manager.register(filter, session_id.clone());
         // Acknowledge the subscription.
         let mut accepted =
@@ -1337,17 +1373,36 @@ impl ARCPRuntime {
                 subscription_id: subscription_id.clone(),
             }));
         accepted.correlation_id = Some(correlation_id);
-        accepted.session_id = Some(session_id);
+        accepted.session_id = Some(session_id.clone());
         accepted.subscription_id = Some(subscription_id.clone());
         let _ = out.send(accepted).await;
 
         // Spawn a forwarder task that wraps each delivered envelope in a
         // subscribe.event and pushes to the outbound channel. Backfill
         // (the §13.3 boundary marker) is left for a follow-up.
+        //
+        // ARCP v1.1 §14 same-principal scoping is enforced HERE, at
+        // delivery: an envelope is forwarded only if its publishing
+        // session belongs to the subscriber's own session or to a session
+        // owned by the same authenticated principal. This is checked at
+        // delivery (not just registration) so sessions that appear after
+        // the subscription, and anonymous principals, are handled
+        // correctly.
         let out_clone = out.clone();
         let sub_id = subscription_id.clone();
+        let principals = Arc::clone(session_principals);
+        let subscriber_session = session_id.clone();
+        let subscriber_principal = principal;
         let join = tokio::spawn(async move {
             while let Some(event) = rx.next().await {
+                if !subscription_scope_permits(
+                    &principals,
+                    &subscriber_session,
+                    subscriber_principal.as_deref(),
+                    event.session_id.as_ref(),
+                ) {
+                    continue;
+                }
                 let value = match serde_json::to_value(&event) {
                     Ok(v) => v,
                     Err(e) => {
@@ -1676,6 +1731,35 @@ const fn is_forwardable_job_event(payload: &MessageType) -> bool {
             | MessageType::StreamError(_)
             | MessageType::ArtifactRef(_)
     )
+}
+
+/// ARCP v1.1 §14 same-principal subscription scope check.
+///
+/// Returns `true` when an envelope published by `event_session` may be
+/// delivered to a generic subscriber identified by `subscriber_session` /
+/// `subscriber_principal`. The subscriber always sees its own session; it
+/// also sees sessions owned by the same non-anonymous principal. Anonymous
+/// subscribers (no principal) see only their own session, and envelopes
+/// with no session id are never delivered.
+fn subscription_scope_permits(
+    session_principals: &DashMap<SessionId, Option<String>>,
+    subscriber_session: &SessionId,
+    subscriber_principal: Option<&str>,
+    event_session: Option<&SessionId>,
+) -> bool {
+    let Some(event_session) = event_session else {
+        return false;
+    };
+    if event_session == subscriber_session {
+        return true;
+    }
+    let Some(subscriber_principal) = subscriber_principal else {
+        return false;
+    };
+    session_principals
+        .get(event_session)
+        .and_then(|p| p.value().clone())
+        .is_some_and(|owner| owner == subscriber_principal)
 }
 
 /// Same-principal authorization helper for cross-session cancel
