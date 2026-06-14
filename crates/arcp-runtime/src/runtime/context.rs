@@ -30,6 +30,132 @@ pub struct ToolContext {
     pub(crate) budget: BudgetTracker,
     /// Accepted lease request for this job.
     pub(crate) lease: Option<LeaseRequest>,
+    /// Per-job result-stream state (ARCP v1.1 §8.4). Shared with the
+    /// runtime task so it can enforce chunk ordering and the
+    /// stream-then-inline ban at job completion.
+    pub(crate) result_stream: Arc<Mutex<ResultStreamState>>,
+}
+
+/// Maximum size of a single `job.result_chunk` `data` field (ARCP v1.1
+/// §14 recommends a 1 MB cap; exceeding it is an `INTERNAL_ERROR`).
+pub(crate) const MAX_RESULT_CHUNK_BYTES: usize = 1024 * 1024;
+
+/// Maximum total size of an assembled streamed result.
+pub(crate) const MAX_RESULT_TOTAL_BYTES: usize = 256 * 1024 * 1024;
+
+/// Per-job runtime state for a `job.result_chunk` stream (ARCP v1.1 §8.4).
+///
+/// The runtime — not the handler — owns chunk ordering and the terminal
+/// `result_id` invariant. A handler emits chunks via
+/// [`ToolContext::emit_result_chunk`]; this state validates that the
+/// first chunk is `chunk_seq == 0`, subsequent chunks are strictly
+/// monotonic for a single `result_id`, no chunk follows the terminal
+/// (`more: false`) chunk, and per/total size caps hold.
+#[derive(Debug, Default)]
+pub(crate) struct ResultStreamState {
+    active: Option<ActiveResultStream>,
+}
+
+#[derive(Debug)]
+struct ActiveResultStream {
+    result_id: String,
+    next_seq: u64,
+    finished: bool,
+    total_bytes: usize,
+}
+
+impl ResultStreamState {
+    /// The `result_id` of the stream that has been started, if any.
+    pub(crate) fn active_result_id(&self) -> Option<&str> {
+        self.active.as_ref().map(|s| s.result_id.as_str())
+    }
+
+    /// True once the terminal (`more: false`) chunk has been emitted.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.active.as_ref().is_some_and(|s| s.finished)
+    }
+
+    /// Validate and record one chunk. Returns the protocol error on any
+    /// §8.4 violation.
+    fn record_chunk(
+        &mut self,
+        result_id: &str,
+        chunk_seq: u64,
+        data_len: usize,
+        more: bool,
+    ) -> Result<(), ARCPError> {
+        if result_id.is_empty() {
+            return Err(ARCPError::InvalidRequest {
+                detail: "job.result_chunk result_id MUST be non-empty (§8.4)".into(),
+            });
+        }
+        if data_len > MAX_RESULT_CHUNK_BYTES {
+            return Err(ARCPError::Internal {
+                detail: format!(
+                    "job.result_chunk exceeds per-chunk size cap ({data_len} > \
+                     {MAX_RESULT_CHUNK_BYTES} bytes, §14)"
+                ),
+            });
+        }
+        match self.active.as_mut() {
+            None => {
+                if chunk_seq != 0 {
+                    return Err(ARCPError::FailedPrecondition {
+                        detail: format!(
+                            "first job.result_chunk MUST have chunk_seq 0, got {chunk_seq} (§8.4)"
+                        ),
+                    });
+                }
+                self.active = Some(ActiveResultStream {
+                    result_id: result_id.to_owned(),
+                    next_seq: 1,
+                    finished: !more,
+                    total_bytes: data_len,
+                });
+                Ok(())
+            }
+            Some(stream) => {
+                if stream.finished {
+                    return Err(ARCPError::FailedPrecondition {
+                        detail: "job.result_chunk emitted after the terminal (more:false) chunk \
+                                 (§8.4)"
+                            .into(),
+                    });
+                }
+                if result_id != stream.result_id {
+                    return Err(ARCPError::FailedPrecondition {
+                        detail: format!(
+                            "job.result_chunk result_id changed mid-stream (expected {}, got \
+                             {result_id}) (§8.4)",
+                            stream.result_id
+                        ),
+                    });
+                }
+                if chunk_seq != stream.next_seq {
+                    return Err(ARCPError::OutOfRange {
+                        detail: format!(
+                            "job.result_chunk out of order: expected chunk_seq {}, got \
+                             {chunk_seq} (§8.4)",
+                            stream.next_seq
+                        ),
+                    });
+                }
+                let new_total = stream.total_bytes.saturating_add(data_len);
+                if new_total > MAX_RESULT_TOTAL_BYTES {
+                    return Err(ARCPError::Internal {
+                        detail: format!(
+                            "streamed result exceeds total size cap ({new_total} > \
+                             {MAX_RESULT_TOTAL_BYTES} bytes, §14)"
+                        ),
+                    });
+                }
+                stream.total_bytes = new_total;
+                stream.next_seq += 1;
+                stream.finished = !more;
+                Ok(())
+            }
+        }
+    }
 }
 
 /// Per-job `cost.budget` counters (ARCP v1.1 §9.6).
@@ -412,15 +538,21 @@ impl ToolContext {
 
     /// Emit one `job.result_chunk` fragment (ARCP v1.1 §8.4).
     ///
-    /// `chunk_seq` is the caller's responsibility — start at 0 and
-    /// increment per chunk for the same `result_id`. The terminal chunk
-    /// MUST set `more: false`; the job's terminal `job.completed`
-    /// SHOULD then carry the same `result_id`.
+    /// The runtime — not the handler — enforces the §8.4 invariants:
+    /// the first chunk MUST be `chunk_seq == 0`, subsequent chunks MUST be
+    /// strictly monotonic for a single `result_id`, no chunk may follow
+    /// the terminal (`more: false`) chunk, and per-chunk / total size caps
+    /// apply. The job's terminal `job.completed` MUST then carry the same
+    /// `result_id` (enforced by the runtime at completion).
     ///
     /// # Errors
     ///
-    /// Returns [`ARCPError::Unavailable`] if the outbound channel is
-    /// closed.
+    /// - [`ARCPError::FailedPrecondition`] for a non-zero first chunk, a
+    ///   changed `result_id` mid-stream, or a chunk after the terminal one.
+    /// - [`ARCPError::OutOfRange`] for a non-monotonic `chunk_seq`.
+    /// - [`ARCPError::InvalidRequest`] for an empty `result_id`.
+    /// - [`ARCPError::Internal`] when a size cap is exceeded.
+    /// - [`ARCPError::Unavailable`] if the outbound channel is closed.
     pub async fn emit_result_chunk(
         &self,
         result_id: impl Into<String>,
@@ -429,10 +561,20 @@ impl ToolContext {
         encoding: ResultChunkEncoding,
         more: bool,
     ) -> Result<(), ARCPError> {
+        let result_id = result_id.into();
+        let data = data.into();
+        // Validate and record ordering/size BEFORE emitting, so a rejected
+        // chunk never reaches the wire.
+        {
+            let mut guard = self.result_stream.lock().map_err(|_| ARCPError::Internal {
+                detail: "result stream mutex poisoned".into(),
+            })?;
+            guard.record_chunk(&result_id, chunk_seq, data.len(), more)?;
+        }
         let mut env = Envelope::new(MessageType::JobResultChunk(JobResultChunkPayload {
-            result_id: result_id.into(),
+            result_id,
             chunk_seq,
-            data: data.into(),
+            data,
             encoding,
             more,
         }));
@@ -470,6 +612,7 @@ mod tests {
             out: out_tx,
             budget: BudgetTracker::new(),
             lease: None,
+            result_stream: Arc::new(Mutex::new(ResultStreamState::default())),
         };
         (ctx, out_rx)
     }
@@ -480,5 +623,77 @@ mod tests {
         // Just exercise the const accessors so they're covered.
         assert!(ctx.correlation_id().as_str().starts_with("msg_"));
         assert!(ctx.job_id().as_str().starts_with("job_"));
+    }
+
+    #[tokio::test]
+    async fn ordered_chunks_are_accepted_and_finalize() {
+        let (ctx, mut rx) = build_ctx();
+        ctx.emit_result_chunk("res_1", 0, "a", ResultChunkEncoding::Utf8, true)
+            .await
+            .expect("chunk 0");
+        ctx.emit_result_chunk("res_1", 1, "b", ResultChunkEncoding::Utf8, false)
+            .await
+            .expect("chunk 1 terminal");
+        // Two envelopes were emitted.
+        assert!(rx.recv().await.is_some());
+        assert!(rx.recv().await.is_some());
+        let (active_id, finished) = {
+            let guard = ctx.result_stream.lock().unwrap();
+            (
+                guard.active_result_id().map(str::to_owned),
+                guard.is_finished(),
+            )
+        };
+        assert_eq!(active_id.as_deref(), Some("res_1"));
+        assert!(finished);
+    }
+
+    #[tokio::test]
+    async fn first_chunk_must_be_seq_zero() {
+        let (ctx, _rx) = build_ctx();
+        let err = ctx
+            .emit_result_chunk("res_1", 1, "a", ResultChunkEncoding::Utf8, true)
+            .await
+            .expect_err("non-zero first chunk rejected");
+        assert!(matches!(err, ARCPError::FailedPrecondition { .. }));
+    }
+
+    #[tokio::test]
+    async fn out_of_order_chunk_is_rejected() {
+        let (ctx, _rx) = build_ctx();
+        ctx.emit_result_chunk("res_1", 0, "a", ResultChunkEncoding::Utf8, true)
+            .await
+            .expect("chunk 0");
+        let err = ctx
+            .emit_result_chunk("res_1", 2, "c", ResultChunkEncoding::Utf8, false)
+            .await
+            .expect_err("gap rejected");
+        assert!(matches!(err, ARCPError::OutOfRange { .. }));
+    }
+
+    #[tokio::test]
+    async fn chunk_after_terminal_is_rejected() {
+        let (ctx, _rx) = build_ctx();
+        ctx.emit_result_chunk("res_1", 0, "a", ResultChunkEncoding::Utf8, false)
+            .await
+            .expect("terminal chunk");
+        let err = ctx
+            .emit_result_chunk("res_1", 1, "b", ResultChunkEncoding::Utf8, false)
+            .await
+            .expect_err("post-terminal rejected");
+        assert!(matches!(err, ARCPError::FailedPrecondition { .. }));
+    }
+
+    #[tokio::test]
+    async fn result_id_change_mid_stream_is_rejected() {
+        let (ctx, _rx) = build_ctx();
+        ctx.emit_result_chunk("res_1", 0, "a", ResultChunkEncoding::Utf8, true)
+            .await
+            .expect("chunk 0");
+        let err = ctx
+            .emit_result_chunk("res_2", 1, "b", ResultChunkEncoding::Utf8, false)
+            .await
+            .expect_err("result_id change rejected");
+        assert!(matches!(err, ARCPError::FailedPrecondition { .. }));
     }
 }

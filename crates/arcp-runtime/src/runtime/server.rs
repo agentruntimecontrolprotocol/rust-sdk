@@ -1114,6 +1114,14 @@ impl ARCPRuntime {
         // LEASE_EXPIRED. `DateTime<Utc>` is `Copy`, so this does not move
         // `lease` (which is consumed by the ToolContext below).
         let lease_expires_at = lease.as_ref().and_then(|l| l.expires_at);
+        // ARCP v1.1 §8.4: shared result-stream state so the runtime can
+        // enforce chunk ordering and the stream-then-inline ban at
+        // completion. One handle goes into the ToolContext; the other
+        // stays here for the completion check.
+        let result_stream = Arc::new(std::sync::Mutex::new(
+            crate::runtime::context::ResultStreamState::default(),
+        ));
+        let result_stream_for_ctx = Arc::clone(&result_stream);
         // ARCP v1.1 §9.6: seed the per-job budget tracker from the
         // `cost_budget` field on `tool.invoke`. Absent / empty means
         // budgeting is disabled for this job.
@@ -1161,6 +1169,7 @@ impl ARCPRuntime {
                 out: out_clone.clone(),
                 budget: budget_tracker,
                 lease,
+                result_stream: result_stream_for_ctx,
             };
 
             // §9.5: a future that resolves when the lease deadline passes.
@@ -1189,15 +1198,31 @@ impl ARCPRuntime {
 
             let terminal = match outcome {
                 Outcome::Completed(value) => {
-                    jobs_clone.set_state(&job_id, JobState::Completed);
                     // Allow agents that stream results to indicate the
                     // terminating job.completed should reference a
                     // `result_id` (ARCP v1.1 §8.4) by returning the
                     // sentinel shape `{ "$arcp_streamed_result": {
                     // result_id, result_size?, summary? } }`. Everything
                     // else flows through as `value` (the v1.0 path).
-                    let completed = streamed_result_from_value(value);
-                    MessageType::JobCompleted(completed)
+                    //
+                    // §8.4: if the handler emitted any result_chunk, the
+                    // completion MUST reference the same result_id and MUST
+                    // NOT be inline. The runtime enforces this here.
+                    match finalize_streamed_completion(&result_stream, value) {
+                        Ok(completed) => {
+                            jobs_clone.set_state(&job_id, JobState::Completed);
+                            MessageType::JobCompleted(completed)
+                        }
+                        Err(e) => {
+                            jobs_clone.set_state(&job_id, JobState::Failed);
+                            MessageType::JobFailed(JobFailedPayload {
+                                code: e.code(),
+                                retryable: Some(e.retryable()),
+                                message: e.to_string(),
+                                details: None,
+                            })
+                        }
+                    }
                 }
                 Outcome::Failed(e) => {
                     jobs_clone.set_state(&job_id, JobState::Failed);
@@ -1801,6 +1826,48 @@ fn redact_for_subscribers(env: &Envelope) -> Envelope {
 /// `result_size`, `summary`) onto the terminating `job.completed` rather
 /// than carrying the sentinel through as `value`.
 pub const STREAMED_RESULT_SENTINEL: &str = "$arcp_streamed_result";
+
+/// Build the terminal [`JobCompletedPayload`], enforcing the ARCP v1.1
+/// §8.4 stream invariants against the recorded result-stream state.
+///
+/// If the handler emitted any `result_chunk`, the completion MUST
+/// reference the same `result_id` (via the streaming sentinel) and the
+/// stream MUST have been terminated with `more: false`; a plain inline
+/// value after streaming is a protocol violation. When no chunk was
+/// emitted, the value flows through the normal inline / sentinel path.
+fn finalize_streamed_completion(
+    result_stream: &std::sync::Mutex<crate::runtime::context::ResultStreamState>,
+    value: serde_json::Value,
+) -> Result<JobCompletedPayload, ARCPError> {
+    let guard = result_stream.lock().map_err(|_| ARCPError::Internal {
+        detail: "result stream mutex poisoned".into(),
+    })?;
+    let Some(active_id) = guard.active_result_id() else {
+        // No chunks streamed — inline or sentinel completion is fine.
+        return Ok(streamed_result_from_value(value));
+    };
+    let completed = streamed_result_from_value(value);
+    match completed.result_id.as_deref() {
+        Some(rid) if rid == active_id => {
+            if guard.is_finished() {
+                Ok(completed)
+            } else {
+                Err(ARCPError::FailedPrecondition {
+                    detail: format!(
+                        "result stream {active_id} was not terminated with a more:false chunk \
+                         before job.completed (§8.4)"
+                    ),
+                })
+            }
+        }
+        _ => Err(ARCPError::FailedPrecondition {
+            detail: format!(
+                "job streamed result_chunk(s) for {active_id} but completed with an inline / \
+                 mismatched result; the terminal result MUST carry the matching result_id (§8.4)"
+            ),
+        }),
+    }
+}
 
 /// Build a [`JobCompletedPayload`] from a tool's returned value,
 /// recognising the streaming-result sentinel.

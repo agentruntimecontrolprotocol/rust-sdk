@@ -149,6 +149,128 @@ async fn result_chunk_stream_and_completed_with_result_id() {
     );
 }
 
+/// A handler that emits a chunk then returns a plain inline value — a
+/// §8.4 violation (stream-then-inline). The runtime must fail the job.
+struct StreamThenInline;
+
+#[async_trait]
+impl ToolHandler for StreamThenInline {
+    fn name(&self) -> &'static str {
+        "stream-then-inline"
+    }
+    async fn invoke(
+        &self,
+        _arguments: serde_json::Value,
+        ctx: ToolContext,
+    ) -> Result<serde_json::Value, ARCPError> {
+        ctx.emit_result_chunk("res_x", 0, "frag", ResultChunkEncoding::Utf8, false)
+            .await?;
+        // Returns an inline value (no streaming sentinel) after streaming.
+        Ok(serde_json::json!({"inline": true}))
+    }
+}
+
+/// A handler that emits chunks out of order — `emit_result_chunk` must
+/// return a protocol error which surfaces as job.failed.
+struct OutOfOrderStream;
+
+#[async_trait]
+impl ToolHandler for OutOfOrderStream {
+    fn name(&self) -> &'static str {
+        "out-of-order"
+    }
+    async fn invoke(
+        &self,
+        _arguments: serde_json::Value,
+        ctx: ToolContext,
+    ) -> Result<serde_json::Value, ARCPError> {
+        ctx.emit_result_chunk("res_y", 0, "a", ResultChunkEncoding::Utf8, true)
+            .await?;
+        // Skip seq 1 — must be rejected by the runtime.
+        ctx.emit_result_chunk("res_y", 2, "c", ResultChunkEncoding::Utf8, false)
+            .await?;
+        Ok(serde_json::json!(null))
+    }
+}
+
+async fn run_to_terminal(
+    tool: Arc<dyn ToolHandler>,
+    name: &str,
+) -> arcp::messages::JobFailedPayload {
+    let runtime = ARCPRuntime::builder()
+        .with_authenticator(Box::new(BearerAuthenticator::new().with_token("t", "p")))
+        .with_tools(ToolRegistryBuilder::new().with(tool).build())
+        .build()
+        .await
+        .expect("build");
+    let (server_t, client_t) = paired();
+    let _h = runtime.serve_connection(server_t);
+
+    let mut open = Envelope::new(MessageType::SessionOpen(SessionOpenPayload {
+        auth: Credentials {
+            scheme: AuthScheme::Bearer,
+            token: Some("t".into()),
+        },
+        client: ClientIdentity {
+            kind: "rc-test".into(),
+            version: "0".into(),
+            fingerprint: None,
+            principal: None,
+        },
+        capabilities: Capabilities::default(),
+    }));
+    open.id = arcp::ids::MessageId::new();
+    client_t.send(open).await.expect("send");
+    let accepted = client_t.recv().await.expect("recv").expect("envelope");
+    let MessageType::SessionAccepted(payload) = accepted.payload else {
+        panic!("expected session.accepted");
+    };
+
+    let mut invoke = Envelope::new(MessageType::ToolInvoke(ToolInvokePayload::new(
+        name,
+        serde_json::json!({}),
+    )));
+    invoke.session_id = Some(payload.session_id);
+    client_t.send(invoke).await.expect("send");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        let env = tokio::time::timeout(Duration::from_millis(500), client_t.recv())
+            .await
+            .expect("timely")
+            .expect("recv")
+            .expect("envelope");
+        match env.payload {
+            MessageType::JobFailed(p) => return p,
+            MessageType::JobCompleted(_) => panic!("expected job.failed, got job.completed"),
+            _ => {}
+        }
+    }
+    panic!("did not reach a terminal failure");
+}
+
+/// §8.4 — a job that streams a chunk then completes inline must fail.
+#[tokio::test]
+async fn streamed_then_inline_completion_is_a_protocol_error() {
+    let failed = run_to_terminal(Arc::new(StreamThenInline), "stream-then-inline").await;
+    assert!(
+        failed.message.contains("result_id") || failed.message.contains("§8.4"),
+        "expected a §8.4 stream/inline violation, got: {}",
+        failed.message
+    );
+}
+
+/// §8.4 — out-of-order chunk emission fails with a protocol error.
+#[tokio::test]
+async fn out_of_order_chunk_emission_fails() {
+    let failed = run_to_terminal(Arc::new(OutOfOrderStream), "out-of-order").await;
+    assert!(
+        failed.message.contains("out of order") || failed.message.contains("§8.4"),
+        "expected an out-of-order §8.4 error, got: {}",
+        failed.message
+    );
+}
+
 #[tokio::test]
 async fn result_chunk_round_trips_through_serde() {
     let env = Envelope::new(MessageType::JobResultChunk(

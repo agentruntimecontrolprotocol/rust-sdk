@@ -165,6 +165,9 @@ mod tests {
             out: tx,
             budget: crate::runtime::context::BudgetTracker::new(),
             lease: None,
+            result_stream: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::runtime::context::ResultStreamState::default(),
+            )),
         };
         let result = echo
             .invoke(serde_json::json!({"k": 1}), ctx)
